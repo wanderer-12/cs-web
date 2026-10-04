@@ -1,0 +1,20 @@
+# 依赖与构建产物
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# 编辑器 / 系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+pnpm-debug.log*
+npm-debug.log*
+
+# 启动器：本机设置（首次运行由启动器自动生成）
+launcher/settings.txt
