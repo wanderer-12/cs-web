@@ -39,6 +39,9 @@ import {
   hitMarkerScale,
   itemPrice,
   mapLabel,
+  modeBadge,
+  modeRulesNote,
+  modeSummary,
   phaseClockColor,
   prettifyId,
   projectToRadar,
@@ -56,6 +59,7 @@ import {
   type ScoreRow,
 } from '../src/ui/pure';
 import { CSS, ROOT_CLASS, STYLE_ID } from '../src/ui/styles';
+import { MODES } from '../src/core/config';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -624,6 +628,40 @@ describe('colours and labels', () => {
 // ---------------------------------------------------------------------------
 // styles.ts — the sheet must be a plain string and cover the classes Hud uses
 // ---------------------------------------------------------------------------
+
+describe('mode labels', () => {
+  it('spells the classic rules exactly as the HUD always has', () => {
+    expect(modeSummary(MODES.classic)).toBe('first to 13 rounds (MR12)');
+    expect(modeBadge(MODES.classic)).toBe('MR12');
+    expect(modeRulesNote(MODES.classic)).toBe('First to 13 rounds · half at 12 rounds');
+  });
+
+  it('describes the duel by its win target and its three stages', () => {
+    const summary = modeSummary(MODES.duel);
+    expect(summary).toContain('单挑模式');
+    expect(summary).toContain('先到 17 回合');
+    expect(summary).toContain('手枪局 8');
+    expect(summary).toContain('步枪局 15');
+    expect(summary).toContain('狙击局 10');
+    expect(modeBadge(MODES.duel)).toBe('先到 17');
+    expect(modeRulesNote(MODES.duel)).toContain('共 33 回合');
+  });
+
+  it('ships the start-menu styles its markup references', () => {
+    for (const cls of [
+      'hud-startmenu',
+      'start-btn',
+      'start-btn-label',
+      'start-btn-hint',
+      'start-row',
+      'start-input',
+      'hud-lanbox',
+      'btn-primary',
+    ]) {
+      expect(CSS).toContain(`.${cls}`);
+    }
+  });
+});
 
 describe('styles', () => {
   it('exports a single non-empty CSS template', () => {

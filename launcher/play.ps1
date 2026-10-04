@@ -38,6 +38,10 @@ $script:SettingsFile    = Join-Path $PSScriptRoot 'settings.txt'
 $script:DefaultDevPort  = 5174
 $script:DefaultProdPort = 4173
 $script:Difficulties    = @('easy', 'normal', 'hard', 'expert')
+# 局域网中继：两台机器都连它，主机标签页跑权威模拟。端口要和
+# src/net/LanProtocol.ts 里的 LAN_RELAY_PORT 一致。
+$script:RelayPort       = 5175
+$script:RelayFile       = Join-Path (Join-Path $PSScriptRoot '..') 'server\lan-relay.mjs'
 
 # ============================================================================
 # 输出
@@ -65,6 +69,13 @@ function Show-Controls {
   Write-Host ''
   Write-Host '  操作: WASD 移动 | 左键 射击 | R 换弹 | E 埋/拆包/换枪 | B 买枪 | Tab 计分板' -ForegroundColor DarkGray
   Write-Host '        Shift 静步 | 左Alt 下蹲 | Space 跳 | 1-5 换武器 | G 丢枪 | F3 性能统计' -ForegroundColor DarkGray
+}
+
+function Show-LanInfo([string]$lanIp, [int]$port, [string]$lanUrl) {
+  Write-Host ''
+  Write-Host ('   局域网 1v1: 朋友在同一 WiFi 下打开  ' + $lanUrl) -ForegroundColor Green
+  Write-Host ('                主菜单 -> 创建房间 = 你;对方 -> 加入房间（地址已自动填 '+ $lanIp + '）') -ForegroundColor DarkGray
+  Write-Host ('                中继端口 ' + $script:RelayPort + '（关掉这个窗口会一起停）') -ForegroundColor DarkGray
 }
 
 # ============================================================================
@@ -289,6 +300,47 @@ function Open-Game([string]$url) {
   Start-Process $url
 }
 
+function Get-LanIp {
+  # 朋友要连的就是这台机器在路由器下的地址。优先私网段（192.168.x / 10.x /
+  # 172.16-31.x），虚拟网卡（VPN、WSL、Hyper-V）常在别的段里，排在后面。
+  try {
+    # 注意 @(...)：单个字符串被管道"拆包"成标量时 $x[0] 会变成第一个字符
+    # （实测返回 "1" 而不是 "192.168.1.23"），所以必须强制成数组。
+    $all = @([System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName()) |
+      Where-Object {
+        $_.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and
+        -not [System.Net.IPAddress]::IsLoopback($_)
+      } | ForEach-Object { $_.IPAddressToString })
+    $private = @($all | Where-Object { $_ -match '^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)' })
+    if ($private.Count -gt 0) { return $private[0] }
+    if ($all.Count -gt 0) { return $all[0] }
+  } catch { }
+  return '127.0.0.1'
+}
+
+function Start-Relay {
+  # 中继是哑转发（不持有游戏状态），两台机器都连它；主机标签页才是权威。
+  # 已经在跑（上次没关掉、或手动开过）就直接复用，不重复启动。
+  if (-not (Test-Path -LiteralPath $script:RelayFile)) {
+    Write-Note '找不到 server\lan-relay.mjs，局域网联机会连不上（单人/人机不受影响）。'
+    return $null
+  }
+  if (Test-PortBusy $script:RelayPort) {
+    Write-Ok ('局域网中继已经在 ' + $script:RelayPort + ' 端口上跑，直接复用。')
+    return $null
+  }
+  $proc = Start-Process -FilePath 'node' -ArgumentList @($script:RelayFile) `
+    -WorkingDirectory $script:Root -WindowStyle Hidden -PassThru
+  Start-Sleep -Milliseconds 500
+  if (Test-PortBusy $script:RelayPort) {
+    Write-Ok ('局域网中继已启动（端口 ' + $script:RelayPort + '）')
+    return $proc
+  }
+  Write-Note '局域网中继没起来（端口未监听），仅联机受影响。'
+  if ($proc) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+  return $null
+}
+
 function Test-BuildStale {
   $index = Join-Path $script:Root 'dist\index.html'
   if (-not (Test-Path -LiteralPath $index)) { return $true }
@@ -345,9 +397,16 @@ function Start-Game([string]$kind) {
 
   $url = Get-GameUrl ('http://localhost:' + $port) $settings $UrlParams
 
+  # 朋友那台机器上要打开的是这台机器的局域网地址；带 ?join=1 会直接以客机身份
+  # 进单挑（主菜单里的「加入房间」填同一个地址也行）。
+  $lanIp = Get-LanIp
+  $lanUrl = Get-GameUrl ('http://' + $lanIp + ':' + $port) @{} 'join=1'
+  $relay = Start-Relay
+
   if ($alreadyRunning) {
     Write-Host ''
     Write-Host ('   游戏地址: ' + $url) -ForegroundColor Green
+    Show-LanInfo $lanIp $port $lanUrl
     Open-Game $url
     return
   }
@@ -371,6 +430,7 @@ function Start-Game([string]$kind) {
   Write-Host ('   游戏地址: ' + $url) -ForegroundColor Green
   Write-Host ('   停止: 在这个窗口按 Ctrl+C，或直接关闭窗口' ) -ForegroundColor DarkGray
   Write-Host ('   参数: ' + (Format-Settings $settings)) -ForegroundColor DarkGray
+  Show-LanInfo $lanIp $port $lanUrl
   Show-Controls
 
   # 服务器什么时候真的起来了，浏览器就什么时候开——轮询放在后台任务里，
@@ -393,6 +453,8 @@ function Start-Game([string]$kind) {
   Write-Host ''
   & pnpm @argv
   $code = $LASTEXITCODE
+
+  if ($relay) { Stop-Process -Id $relay.Id -Force -ErrorAction SilentlyContinue }
 
   if ($watcher) {
     Stop-Job -Job $watcher -ErrorAction SilentlyContinue | Out-Null
@@ -468,6 +530,14 @@ function Show-Diagnostics {
   Write-Host ('   生产模式  : ' + (Get-GameUrl ('http://localhost:' + $script:DefaultProdPort) $s $UrlParams))
   Write-Host ('   5174 占用 : ' + (Test-PortBusy $script:DefaultDevPort))
   Write-Host ('   4173 占用 : ' + (Test-PortBusy $script:DefaultProdPort))
+  $relayState = '缺少 server\lan-relay.mjs'
+  if (Test-Path -LiteralPath $script:RelayFile) {
+    if (Test-PortBusy $script:RelayPort) { $relayState = '已在 ' + $script:RelayPort + ' 端口上跑' }
+    else { $relayState = '未启动（开游戏时自动拉起，端口 ' + $script:RelayPort + '）' }
+  }
+  Write-Host ('   局域网中继: ' + $relayState)
+  Write-Host ('   局域网 IP : ' + (Get-LanIp))
+  Write-Host ('   联机地址  : ' + (Get-GameUrl ('http://' + (Get-LanIp) + ':' + $script:DefaultDevPort) @{} 'join=1'))
 }
 
 # ============================================================================

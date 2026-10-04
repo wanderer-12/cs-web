@@ -18,7 +18,7 @@
 
 import { bus as defaultBus } from '../core/events';
 import type { EventBus } from '../core/events';
-import { MATCH, PERF } from '../core/config';
+import { MATCH, MODES, PERF, type ModeRules } from '../core/config';
 import type { Brush, MapData, Team, Vec3 } from '../core/types';
 import { WEAPONS } from '../combat/weaponDefs';
 import type {
@@ -46,6 +46,7 @@ import {
   healthColor,
   hitMarkerAlpha,
   mapLabel,
+  modeSummary,
   projectToRadar,
   radarInBounds,
   scoreLine,
@@ -56,6 +57,9 @@ import {
 import { BuyMenu } from './BuyMenu';
 import { Scoreboard } from './Scoreboard';
 import { injectStyles, ROOT_CLASS } from './styles';
+// Type-only: the HUD renders a LAN session's state but never creates one, so
+// this import leaves no runtime dependency on the net layer.
+import type { LanStatus } from '../net/LanSession';
 
 export type {
   HudFrameState,
@@ -132,6 +136,8 @@ export class Hud {
 
   private readonly doc: Document;
   private readonly map: MapData;
+  /** The ruleset's labels; drives the menu footer and the scoreboard wording. */
+  private readonly mode: ModeRules;
   private readonly buy: BuyMenu;
   private readonly score: Scoreboard;
 
@@ -160,6 +166,8 @@ export class Hud {
   private pickupEl!: HTMLDivElement;
   private pickupLabelEl!: HTMLSpanElement;
   private announceEl!: HTMLDivElement;
+  /** LAN connection line (bottom centre); hidden in single-player. */
+  private lanEl!: HTMLDivElement;
   private feedEl!: HTMLDivElement;
   private crosshairEl!: HTMLDivElement;
   private crosshairLines: HTMLDivElement[] = [];
@@ -203,6 +211,7 @@ export class Hud {
   constructor(opts: HudOptions) {
     this.doc = opts.root?.ownerDocument ?? (typeof document === 'undefined' ? (null as unknown as Document) : document);
     this.map = opts.map;
+    this.mode = opts.mode ?? MODES.classic;
     this.playerName = opts.playerName ?? MATCH.playerName;
     if (opts.onBuy) this.onBuy = opts.onBuy;
     if (opts.onRequestPointerLock) this.onRequestPointerLock = opts.onRequestPointerLock;
@@ -235,7 +244,7 @@ export class Hud {
 
     this.buy = new BuyMenu(this.doc);
     this.buy.onBuy = (id) => this.onBuy(id);
-    this.score = new Scoreboard(this.doc);
+    this.score = new Scoreboard(this.doc, this.mode);
     this.score.onMenuAction = (action) => this.onMenuAction(action);
     this.root.appendChild(this.buy.root);
     this.root.appendChild(this.score.root);
@@ -312,6 +321,7 @@ export class Hud {
 
   private buildAnnounce(): void {
     this.announceEl = this.el('div', 'hud-announce hud-hidden', this.root);
+    this.lanEl = this.el('div', 'hud-lan hud-hidden', this.root);
   }
 
   private buildFeed(): void {
@@ -362,13 +372,17 @@ export class Hud {
     settings.type = 'button';
     settings.textContent = 'Settings';
     settings.addEventListener('click', () => this.onMenuAction('settings'));
+    const modes = this.el('button', 'btn hud-ghost', btns);
+    modes.type = 'button';
+    modes.textContent = '模式选择';
+    modes.addEventListener('click', () => this.onMenuAction('main-menu'));
     const quit = this.el('button', 'btn hud-ghost', btns);
     quit.type = 'button';
     quit.textContent = 'Quit';
     quit.addEventListener('click', () => this.onMenuAction('quit'));
 
     const foot = this.el('div', 'menu-foot mono', hero);
-    foot.textContent = `Map ${mapLabel(this.map?.name ?? 'de_dust2_lite')} · first to 13 rounds (MR12)`;
+    foot.textContent = `Map ${mapLabel(this.map?.name ?? 'de_dust2_lite')} · ${modeSummary(this.mode)}`;
 
     const right = this.el('div', 'menu-col', inner);
     const ctrlTitle = this.el('div', 'panel-title', right);
@@ -618,6 +632,33 @@ export class Hud {
 
   getBuyMenuOpen(): boolean {
     return this.buy.isOpen;
+  }
+
+  /**
+   * Items the current stage may buy (the match decides; null means "no filter").
+   * Locked rows stay visible but cannot be bought, so the phase rules are
+   * readable instead of mysterious.
+   */
+  setBuyAllowed(items: readonly string[] | null): void {
+    this.buy.setAllowed(items);
+  }
+
+  /**
+   * Connection line for a LAN duel; `null` hides it, which is what every
+   * single-player match wants. The tone is read off the phase rather than passed
+   * in, so the engine hands over exactly one thing.
+   */
+  setLanStatus(status: LanStatus | null): void {
+    if (this.disposed) return;
+    if (!status) {
+      this.lanEl.classList.add('hud-hidden');
+      return;
+    }
+    this.lanEl.classList.toggle('hud-lan-ok', status.phase === 'playing');
+    this.lanEl.classList.toggle('hud-lan-bad', status.phase === 'disconnected');
+    const who = status.role === 'host' ? '主机' : '客机';
+    this.lanEl.textContent = `${who} · ${status.message}`;
+    this.lanEl.classList.remove('hud-hidden');
   }
 
   /** True when the HUD currently wants the mouse cursor instead of pointer lock. */
@@ -1369,9 +1410,9 @@ function makeDefaultState(): HudFrameState {
     defusing: false,
     defuseProgress: 0,
     pickupHint: '',
-    crosshairGap: 4,
-    crosshairLength: 8,
-    crosshairThickness: 2,
+    crosshairGap: 2,
+    crosshairLength: 5,
+    crosshairThickness: 1,
     crosshairDot: false,
     flashAmount: 0,
     damageFlash: 0,

@@ -8,6 +8,7 @@
 // =============================================================================
 
 import type { MapData, RoundPhase, Team, Vec3 } from '../core/types';
+import type { ModeRules } from '../core/config';
 import { BUY_MENU, EQUIPMENT_PRICE, WEAPONS } from '../combat/weaponDefs';
 
 // ---------------------------------------------------------------------------
@@ -96,6 +97,11 @@ export interface HudOptions {
   root?: HTMLElement;
   /** Map data used to bake the radar base layer. */
   map: MapData;
+  /**
+   * The ruleset in play. The HUD reads its labels ("first to 17", the stage
+   * names, MR12 vs a duel) off it instead of hardcoding classic numbers.
+   */
+  mode?: ModeRules;
   playerName?: string;
   onBuy?: (itemId: string) => void;
   onRequestPointerLock?: () => void;
@@ -105,6 +111,35 @@ export interface HudOptions {
 export interface BuyCategory {
   category: string;
   items: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Mode labels
+//
+// The numbers a player reads ("first to 13", "MR12", "half at 12") belong to the
+// mode, not to the HUD. These three helpers are the only place they are spelled
+// out, and the classic wording is deliberately byte-identical to what the HUD
+// printed before modes existed.
+// ---------------------------------------------------------------------------
+
+/** Menu footer: one line naming the ruleset and its win condition. */
+export function modeSummary(mode: ModeRules): string {
+  if (mode.bomb) return `first to ${mode.roundsToWin} rounds (MR${mode.roundsToWin - 1})`;
+  const stages = mode.phases.map((p) => `${p.label} ${p.rounds}`).join(' / ');
+  return `${mode.label} · 先到 ${mode.roundsToWin} 回合（${stages}）`;
+}
+
+/** Scoreboard badge: `MR12` for classic, the duel's own win target otherwise. */
+export function modeBadge(mode: ModeRules): string {
+  return mode.bomb ? `MR${mode.roundsToWin - 1}` : `先到 ${mode.roundsToWin}`;
+}
+
+/** Scoreboard note line under the header. */
+export function modeRulesNote(mode: ModeRules): string {
+  if (mode.bomb) {
+    return `First to ${mode.roundsToWin} rounds · half at ${Math.ceil(mode.maxRounds / 2)} rounds`;
+  }
+  return `先到 ${mode.roundsToWin} 回合（共 ${mode.maxRounds} 回合 · 不换边）`;
 }
 
 // ---------------------------------------------------------------------------

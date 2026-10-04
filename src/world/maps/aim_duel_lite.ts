@@ -28,7 +28,7 @@
 // refuses to link across, so do not "smooth" these by raising the riser.
 // =============================================================================
 
-import type { MapData, NavNode, SpawnPoint, Vec3 } from '../../core/types';
+import type { MapData, NavNode, PaintZone, SpawnPoint, Vec3 } from '../../core/types';
 import { MapBuilder, cloneMapData, type NavLane } from './mapBuilder';
 
 const TINT = {
@@ -143,6 +143,27 @@ const buyZones = [
   { team: 'CT' as const, min: { x: -672, y: 0, z: -1376 }, max: { x: 672, y: 384, z: -1056 } },
 ];
 
+/**
+ * District paint: one washed square per area, so a player can tell at a glance
+ * whether they are in a lane, at the crates, on a deck or on a spawn pad.
+ *
+ * The rectangles stop short of the decks (which are solid from the ground up, so
+ * paint under them would be buried inside a slab) and stay inside each area's
+ * walls. Colours are the same family dust2 uses, so the two maps read
+ * consistently: warm spawns, cool lanes, a bright deck.
+ */
+const paint: readonly PaintZone[] = [
+  { name: 'TSpawn', minX: -640, minZ: 1088, maxX: 640, maxZ: 1344, floorY: 8, color: 0xb8a17a },
+  { name: 'CTSpawn', minX: -640, minZ: -1344, maxX: 640, maxZ: -1088, floorY: 8, color: 0x8f9ab8 },
+  { name: 'Mid', minX: -520, minZ: -400, maxX: 520, maxZ: 400, floorY: 0, color: 0x86a9bd },
+  { name: 'TMid', minX: -560, minZ: 400, maxX: 560, maxZ: 960, floorY: 0, color: 0xa8996f },
+  { name: 'CTMid', minX: -560, minZ: -960, maxX: 560, maxZ: -400, floorY: 0, color: 0x7f8fa8 },
+  { name: 'WestLane', minX: -960, minZ: -600, maxX: -560, maxZ: 600, floorY: 0, color: 0x93a06a },
+  { name: 'EastLane', minX: 560, minZ: -600, maxX: 960, maxZ: 600, floorY: 0, color: 0xc2a05c },
+  { name: 'TDeck', minX: 384, minZ: 640, maxX: 832, maxZ: 1024, floorY: DECK_TOP, color: 0xd7bd6e },
+  { name: 'CTDeck', minX: -832, minZ: -1024, maxX: -384, maxZ: -640, floorY: DECK_TOP, color: 0x6fae9c },
+];
+
 // ---------------------------------------------------------------------------
 // Navigation
 // ---------------------------------------------------------------------------
@@ -211,6 +232,7 @@ export const AIM_DUEL_LITE: MapData = b.finish({
   nav,
   callouts,
   buyZones,
+  paint,
 });
 
 /** Deep copy of the map so callers can mutate their own working set freely. */

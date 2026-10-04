@@ -27,7 +27,7 @@ import {
   type MatchModeId,
   type TeamComposition,
 } from '../src/core/config';
-import { weaponById } from '../src/combat/weaponDefs';
+import { BUY_MENU, weaponById } from '../src/combat/weaponDefs';
 import { EMPTY_BUTTONS, type InputCommand } from '../src/core/types';
 
 function idle(tick: number): InputCommand {
@@ -386,5 +386,66 @@ describe('duel rounds', () => {
     // The bots got moving: the arena's nav mesh reaches them.
     const far = match.players.filter((p) => p.team !== team);
     expect(far.every((p) => p.state.vel.x !== 0 || p.state.vel.z !== 0 || !p.state.alive)).toBe(true);
+  });
+});
+
+describe('Match — the buy-menu whitelist', () => {
+  /** Weapon kinds the menu's item ids resolve to (gear ids have no definition). */
+  const kindsOf = (items: readonly string[]): Set<string> => {
+    const kinds = new Set<string>();
+    for (const id of items) {
+      const def = weaponById(id);
+      if (def) kinds.add(def.kind);
+    }
+    return kinds;
+  };
+
+  it('offers pistols only in the duel pistol stage, and no defuse kit', () => {
+    const { match } = makeMatch({ mode: 'duel' });
+    const items = match.allowedBuyItems();
+    expect(items.length).toBeGreaterThan(0);
+    expect(kindsOf(items)).toEqual(new Set(['pistol']));
+    expect(items).toContain('kevlar');
+    expect(items).not.toContain('defusekit');
+    expect(items).not.toContain('ak47');
+  });
+
+  it('adds the rifles for the rifle stage and the snipers for the last stage', () => {
+    const { match } = makeMatch({ mode: 'duel' });
+    advanceRounds(match, 8); // round 9 opens the rifle stage
+    const rifle = match.allowedBuyItems();
+    expect(rifle).toContain('ak47');
+    expect(rifle).not.toContain('awp');
+    expect(kindsOf(rifle)).toEqual(new Set(['pistol', 'rifle']));
+
+    loseRounds(match, 15); // round 24 opens the sniper stage
+    const sniper = match.allowedBuyItems();
+    expect(sniper).toContain('awp');
+    expect(sniper).not.toContain('ak47');
+    expect(kindsOf(sniper)).toEqual(new Set(['pistol', 'sniper']));
+  });
+
+  it('leaves the classic menu unrestricted', () => {
+    const { match } = makeMatch({ botsPerTeam: 0 });
+    const items = match.allowedBuyItems();
+    expect(items).toContain('ak47');
+    expect(items).toContain('awp');
+    expect(items).toContain('defusekit');
+    expect(items).toContain('kevlarhelmet');
+  });
+
+  it('names exactly the items buy() will not refuse as phase-locked', () => {
+    // The menu and the simulation must agree item by item, or a row would look
+    // purchasable and silently do nothing.
+    const { match } = makeMatch({ mode: 'duel' });
+    standInBuyZone(match);
+    const allowed = new Set(match.allowedBuyItems());
+    for (const category of BUY_MENU) {
+      for (const id of category.items) {
+        const outcome = match.buy(match.local.id, id as never);
+        if (allowed.has(id)) expect(outcome.reason ?? 'ok').not.toBe('phase-locked');
+        else expect(outcome.reason).toBe('phase-locked');
+      }
+    }
   });
 });

@@ -47,6 +47,9 @@ export class BuyMenu {
   private readonly items = new Map<string, ItemRef>();
   private readonly owned = new Set<string>();
 
+  /** Item ids the current stage may buy; null means "no filter" (classic). */
+  private allowed: Set<string> | null = null;
+
   private moneyEl!: HTMLElement;
   private buyTimerEl!: HTMLElement;
   private modeEl!: HTMLElement;
@@ -318,11 +321,36 @@ export class BuyMenu {
     return false;
   }
 
-  /** Buy an item if it is affordable; otherwise a no-op (dimmed row). */
+  /** Buy an item if the stage allows it and it is affordable; otherwise a no-op. */
   purchase(itemId: string): boolean {
+    if (!this.isAllowed(itemId)) return false;
     if (!canAfford(itemId, this.money)) return false;
     this.onBuy(itemId);
     return true;
+  }
+
+  /**
+   * Restrict the menu to a whitelist of item ids; null clears the filter.
+   * Locked rows stay visible but greyed out and unbuyable, so a stage rule
+   * reads as a rule instead of as a broken menu.
+   */
+  setAllowed(items: readonly string[] | null): void {
+    if (items === null) {
+      if (this.allowed === null) return;
+      this.allowed = null;
+    } else {
+      const next = new Set(items);
+      if (this.allowed && next.size === this.allowed.size && [...next].every((id) => this.allowed!.has(id))) {
+        return;
+      }
+      this.allowed = next;
+    }
+    this.refresh();
+  }
+
+  /** May the current stage buy this item? */
+  private isAllowed(id: string): boolean {
+    return this.allowed === null || this.allowed.has(id);
   }
 
   /** Human-readable buy window hint, e.g. `Buy time 0:12`. */
@@ -361,12 +389,14 @@ export class BuyMenu {
     }
 
     for (const ref of this.items.values()) {
+      const allowed = this.isAllowed(ref.id);
       const affordable = canAfford(ref.id, this.money);
-      ref.el.classList.toggle('hud-poor', !affordable);
+      ref.el.classList.toggle('hud-poor', !affordable || !allowed);
       ref.el.classList.toggle('hud-owned', this.owned.has(ref.id));
-      ref.el.disabled = !affordable;
-      ref.priceEl.textContent = affordabilityNote(ref.id, this.money);
-      ref.el.title = `${this.itemDescription(ref.id)} — ${affordabilityNote(ref.id, this.money)}`;
+      ref.el.disabled = !affordable || !allowed;
+      const note = allowed ? affordabilityNote(ref.id, this.money) : '本阶段不可购买';
+      ref.priceEl.textContent = note;
+      ref.el.title = `${this.itemDescription(ref.id)} — ${note}`;
     }
   }
 }

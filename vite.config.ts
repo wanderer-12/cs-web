@@ -6,6 +6,10 @@ export default defineConfig({
   server: {
     port: 5174,
     open: false,
+    // Listen on every interface: for a LAN duel the guest opens the *host's*
+    // page over the network, so the dev server has to answer to the LAN address
+    // and not only to localhost.
+    host: true,
   },
   build: {
     target: 'es2022',

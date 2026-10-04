@@ -24,6 +24,7 @@ import type {
   Brush,
   MapData,
   NavNode,
+  PaintZone,
   SpawnPoint,
   SurfaceMaterial,
   Team,
@@ -73,6 +74,8 @@ export interface FinishOptions {
   sites?: BombSiteRegion[];
   callouts?: Record<string, Vec3>;
   buyZones?: { team: Team; min: Vec3; max: Vec3 }[];
+  /** District floor paint; a map without zones keeps the legacy dust2 table. */
+  paint?: readonly PaintZone[];
 }
 
 const SOLID_EPS = 0.05;
@@ -541,6 +544,7 @@ export class MapBuilder {
       callouts: opts.callouts ?? {},
       radar: this.computeRadar(bounds),
       buyZones: opts.buyZones ?? [],
+      paint: opts.paint ?? [],
     };
   }
 }

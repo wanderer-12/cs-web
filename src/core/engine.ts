@@ -33,16 +33,29 @@ import { SignLayer } from '../render/Signs';
 import { Hud, createHud } from '../ui/Hud';
 import { sortedScoreRows, type HudFrameState, type RadarBlip, type ScoreRow } from '../ui/pure';
 import { buildMapMeshes, type MapMeshes } from '../world/MapGeometry';
-import { buildDust2Lite } from '../world/maps/de_dust2_lite';
+import { buildMapForMode } from '../world/maps';
 import { createSky, type SkyRig } from '../world/sky';
 import { World } from '../world/world';
 import { createVfx, type VfxSystem } from '../vfx/VfxSystem';
-import { CAMERA, MATCH, MOVE, PERF, TICK_DT } from './config';
+import {
+  CAMERA,
+  MATCH,
+  MOVE,
+  PERF,
+  TICK_DT,
+  modeById,
+  type MatchModeId,
+  type ModeRules,
+  type TeamComposition,
+} from './config';
 import { EventBus } from './events';
 import { GameLoop } from './loop';
 import { clamp01, distance, normalize, sub, v3 } from './math';
 import { Rng } from './rng';
 import { EMPTY_BUTTONS, type ActorState, type InputCommand, type MapData, type Team, type Vec3 } from './types';
+import { LAN_RELAY_PORT, type LanRole } from '../net/LanProtocol';
+import { LanSession, type LanStatus } from '../net/LanSession';
+import { relayUrl } from '../net/WsTransport';
 
 // ---------------------------------------------------------------------------
 // tuning constants that only matter to the shell
@@ -66,10 +79,17 @@ const OCCLUDED_GAIN = 0.32;
 const DAMAGE_FLASH_TIME = 0.45;
 /** Seconds between roster pushes into the TAB scoreboard while it is open. */
 const SCORE_REFRESH_INTERVAL = 0.25;
-/** Crosshair geometry: base gap in px, arm length, arm thickness. */
-const CROSSHAIR_BASE = 4;
-const CROSSHAIR_LENGTH = 7;
-const CROSSHAIR_THICKNESS = 2;
+/**
+ * Crosshair geometry: arm length, arm thickness, and the tightest centre gap.
+ *
+ * The arms are deliberately short and one pixel thick: the crosshair has to sit
+ * on a head at 30 m, and a fat cross hides the very pixel the shot goes to. The
+ * gap still opens with the real bullet cone (`computeInaccuracy`), so the
+ * feedback is unchanged — only the resting size shrank.
+ */
+const CROSSHAIR_LENGTH = 5;
+const CROSSHAIR_THICKNESS = 1;
+const CROSSHAIR_MIN_GAP = 2;
 
 /** Seconds the camera takes to fly between spectated teammates. */
 const UP = { x: 0, y: 1, z: 0 };
@@ -84,6 +104,36 @@ export interface EngineOptions {
   difficulty?: BotDifficulty;
   /** Deterministic seed for the whole match. */
   seed?: number;
+  /** Which ruleset to play. It also picks the map. Defaults to `classic`. */
+  mode?: MatchModeId;
+  /**
+   * Override the mode's own team layout. The LAN duel uses it to put a second
+   * human on the far side instead of three bots.
+   */
+  teams?: Partial<TeamComposition>;
+  /** Display names for the non-local humans, in join order (LAN guests). */
+  remoteNames?: readonly string[];
+  /** Client mirror: actor poses and the round clock arrive from the host. */
+  mirror?: boolean;
+  /**
+   * Join a LAN duel through the relay this machine runs. `host` opens the room
+   * and is authoritative; `guest` dials the host's relay address and mirrors.
+   */
+  lan?: {
+    role: LanRole;
+    /** Host address or IP as typed by the player; the port defaults to the relay's. */
+    host: string;
+    /** Display name sent to the other end. */
+    name: string;
+    room?: string;
+    port?: number;
+    /** Host only: the address the player reads out to the other machine. */
+    shareHint?: string;
+  };
+  /** Connection-line updates, so the start menu can show the same text. */
+  onLanStatus?: (status: LanStatus) => void;
+  /** Called when the player picks "back to the mode menu" from the Esc menu. */
+  onExitToMenu?: () => void;
 }
 
 /** Counters the perf report quotes; all of them are read, never estimated. */
@@ -119,6 +169,9 @@ export class Engine {
   readonly bus = new EventBus();
   readonly map: MapData;
   readonly world: World;
+  /** Which ruleset this engine was built for, and its full rule table. */
+  readonly modeId: MatchModeId;
+  readonly modeRules: ModeRules;
   /** The one camera rig: render camera, VFX camera and audio listener anchor. */
   readonly rig: CameraRig;
   readonly camera: THREE.PerspectiveCamera;
@@ -137,6 +190,8 @@ export class Engine {
   readonly loop: GameLoop;
   /** Rebuilt by `restart()`, hence not readonly. */
   match: Match;
+  /** The LAN duel this engine is part of, or null for a single-player match. */
+  lan: LanSession | null = null;
 
   private readonly canvas: HTMLCanvasElement;
   private readonly options: EngineOptions;
@@ -148,6 +203,8 @@ export class Engine {
   private readonly resizeHandler: () => void;
   /** Reused actor list for the character layer (keeps the frame loop alloc-free). */
   private readonly actorScratch: ActorState[] = [];
+  /** Last buy whitelist pushed into the HUD, so it is only rebuilt on change. */
+  private allowedBuySignature = '';
 
   // scratch, so the frame loop never allocates
   private readonly tmpCamDir = new THREE.Vector3();
@@ -167,6 +224,8 @@ export class Engine {
     this.options = options;
     this.canvas = options.canvas;
     this.seed = options.seed ?? 0x1a2b3c4d;
+    this.modeRules = modeById(options.mode);
+    this.modeId = this.modeRules.id;
 
     // --- renderer ----------------------------------------------------------
     this.renderer = new THREE.WebGLRenderer({
@@ -188,7 +247,8 @@ export class Engine {
     this.renderer.info.autoReset = false;
 
     // --- world -------------------------------------------------------------
-    this.map = buildDust2Lite();
+    // The mode table picks the map, so a duel never even bakes de_dust2.
+    this.map = buildMapForMode(this.modeId);
     this.world = new World(this.map);
     this.sky = createSky(this.scene);
     this.mapMeshes = buildMapMeshes(this.map, { shadows: true });
@@ -248,6 +308,7 @@ export class Engine {
     this.hud = createHud({
       root: options.hudRoot,
       map: this.map,
+      mode: this.modeRules,
       playerName: options.humanName ?? MATCH.playerName,
       onBuy: (itemId) => this.tryBuy(itemId),
       onRequestPointerLock: () => this.beginPlay(),
@@ -265,6 +326,32 @@ export class Engine {
 
     this.resizeHandler = () => this.resize();
     window.addEventListener('resize', this.resizeHandler);
+
+    // --- LAN duel (optional) -----------------------------------------------
+    // Built last, because the session needs both the match and the HUD: it wraps
+    // the socket and pushes connection state straight into the HUD line.
+    if (options.lan) {
+      const url = relayUrl({
+        host: options.lan.host,
+        port: options.lan.port ?? LAN_RELAY_PORT,
+        room: options.lan.room,
+        role: options.lan.role,
+        name: options.lan.name,
+      });
+      this.lan = new LanSession({
+        match: this.match,
+        url,
+        role: options.lan.role,
+        name: options.lan.name,
+        room: options.lan.room,
+        shareHint: options.lan.shareHint,
+        onStatus: (status) => {
+          this.hud.setLanStatus(status);
+          options.onLanStatus?.(status);
+        },
+      });
+    }
+
     this.resize();
     this.bindMatch();
     this.hud.showMainMenu(true);
@@ -287,6 +374,13 @@ export class Engine {
   /** Throw the current match away and start a fresh one. */
   restart(): void {
     if (this.disposed) return;
+    // A LAN duel cannot restart one side on its own: the two machines would be
+    // playing different matches. The session ends and this becomes single-player.
+    if (this.lan) {
+      this.lan.close();
+      this.lan = null;
+      this.hud.setLanStatus(null);
+    }
     this.hud.clearResults();
     this.match.dispose();
     this.match = this.createMatch();
@@ -300,6 +394,8 @@ export class Engine {
     if (this.disposed) return;
     this.disposed = true;
     this.loop.stop();
+    this.lan?.close();
+    this.lan = null;
     window.removeEventListener('resize', this.resizeHandler);
     for (const off of this.offs) off();
     this.offs.length = 0;
@@ -352,6 +448,10 @@ export class Engine {
       humanTeam: this.options.humanTeam,
       difficulty: this.options.difficulty,
       rig: this.rig,
+      mode: this.modeId,
+      teams: this.options.teams,
+      remoteNames: this.options.remoteNames,
+      mirror: this.options.mirror,
     });
   }
 
@@ -364,7 +464,22 @@ export class Engine {
     this.matchEndShown = false;
     this.scoreTimer = 0;
     this.cmd = emptyCommand();
+    this.allowedBuySignature = '';
+    this.syncBuyWindow();
     this.resize();
+  }
+
+  /**
+   * Push the stage's buy whitelist into the buy menu. Called every tick but does
+   * nothing until the phase actually turns over (the signature is a join of the
+   * allowed ids, which only changes when the rules change).
+   */
+  private syncBuyWindow(): void {
+    const items = this.match.allowedBuyItems();
+    const signature = items.join(',');
+    if (signature === this.allowedBuySignature) return;
+    this.allowedBuySignature = signature;
+    this.hud.setBuyAllowed(items);
   }
 
   /**
@@ -426,6 +541,11 @@ export class Engine {
       case 'settings':
         // No options panel in the prototype; the menu stays open.
         break;
+      case 'main-menu':
+        // Hand control back to main.ts, which owns the mode picker.
+        this.stop();
+        this.options.onExitToMenu?.();
+        break;
       case 'quit':
         this.stop();
         break;
@@ -436,7 +556,11 @@ export class Engine {
 
   private tryBuy(itemId: string): void {
     const outcome = this.match.buy(this.match.local.id, itemId);
-    if (outcome.ok) this.audio.playCue('uiClick', null, { bus: 'ui' });
+    if (outcome.ok) {
+      this.audio.playCue('uiClick', null, { bus: 'ui' });
+      // A guest's wallet lives on the host, so the host has to hear about it.
+      this.lan?.requestBuy(itemId);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -450,6 +574,10 @@ export class Engine {
     const cmd = this.input.sample(tick);
     this.cmd = cmd;
     match.tick(cmd, dt);
+    this.syncBuyWindow();
+    // The wire follows the simulation: the host publishes what just happened, the
+    // guest publishes the input it just used.
+    this.lan?.update(cmd);
     if (match.matchOver) this.finishMatch();
   }
 
@@ -651,7 +779,9 @@ export class Engine {
     const halfHeight = Math.max(1, this.renderer.domElement.height) * 0.5;
     const tanHalfFov = Math.tan(((this.rig.fov * 0.5) * Math.PI) / 180);
     const scoped = !!weaponState?.scoped;
-    const gap = scoped || dead ? 0 : (Math.tan(inaccuracy) / tanHalfFov) * halfHeight;
+    // The gap opens with the bullet cone, but never closes tighter than a couple
+    // of pixels: the four arms must stay readable as a cross.
+    const gap = scoped || dead ? 0 : Math.max(CROSSHAIR_MIN_GAP, (Math.tan(inaccuracy) / tanHalfFov) * halfHeight);
     const damageFlash = clamp01(1 - (match.now - this.lastDamageAt) / DAMAGE_FLASH_TIME);
 
     const defusing = match.defuserId === local.id && match.defuseProgress > 0;

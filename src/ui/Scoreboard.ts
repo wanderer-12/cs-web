@@ -7,7 +7,8 @@
 // `sortedScoreRows`. Dead players are dimmed, the local player is highlighted.
 // =============================================================================
 
-import { RULES } from '../core/config';
+import { MODES, type ModeRules } from '../core/config';
+import { modeBadge, modeRulesNote } from './pure';
 import type { Team } from '../core/types';
 import type { ScoreRow } from './pure';
 import { formatMoney, scoreLine, sortedScoreRows, teamRows, teamTotals, winnerShort } from './pure';
@@ -24,6 +25,8 @@ export class Scoreboard {
   readonly matchRoot: HTMLDivElement;
 
   private readonly doc: Document;
+  /** Ruleset wording for the header badge and the note line. */
+  private readonly mode: ModeRules;
 
   private scoreTitleEl!: HTMLElement;
   private scoreModeEl!: HTMLElement;
@@ -51,8 +54,9 @@ export class Scoreboard {
 
   onMenuAction: (action: string) => void = () => {};
 
-  constructor(doc: Document) {
+  constructor(doc: Document, mode: ModeRules = MODES.classic) {
     this.doc = doc;
+    this.mode = mode;
     this.root = doc.createElement('div');
     this.root.className = `overlay ${ROOT_CLASS} hud-scoreboard-wrap hud-hidden`;
     this.root.setAttribute('aria-label', 'Scoreboard');
@@ -81,8 +85,8 @@ export class Scoreboard {
     this.scoreTitleEl.textContent = 'Scoreboard';
     this.scoreModeEl = this.doc.createElement('div');
     this.scoreModeEl.className = 'mmode';
-    // RULES.roundsToWin is 13, i.e. a 12-round half — labelled MR12 as required.
-    this.scoreModeEl.textContent = `MR${RULES.roundsToWin - 1}`;
+    // The mode owns the wording: MR12 for classic, the duel's own win target.
+    this.scoreModeEl.textContent = modeBadge(this.mode);
     this.scoreHeadEl = this.doc.createElement('div');
     this.scoreHeadEl.className = 'mscore mono';
     head.appendChild(this.scoreTitleEl);
@@ -106,7 +110,7 @@ export class Scoreboard {
 
     const note = this.doc.createElement('div');
     note.className = 'sb-note';
-    note.textContent = `First to ${RULES.roundsToWin} rounds · half at ${Math.ceil(RULES.maxRounds / 2)} rounds`;
+    note.textContent = modeRulesNote(this.mode);
     frame.appendChild(note);
 
     this.root.appendChild(frame);

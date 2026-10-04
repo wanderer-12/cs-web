@@ -21,7 +21,7 @@ import { BotController } from '../ai/BotController';
 import { NavGraph } from '../ai/navigation';
 import { CombatSystem } from '../combat/CombatSystem';
 import { buildAllHitboxes } from '../combat/hitbox';
-import { EQUIPMENT_PRICE, weaponById } from '../combat/weaponDefs';
+import { BUY_MENU, EQUIPMENT_PRICE, weaponById } from '../combat/weaponDefs';
 import {
   COMBAT,
   MATCH,
@@ -165,6 +165,23 @@ export interface MatchOptions {
 // ---------------------------------------------------------------------------
 // small helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * The authoritative facts a LAN host pushes to its client (the JSON half of the
+ * wire; poses ride the binary snapshot instead). See `Match.applyNetState`.
+ */
+export interface NetRoundState {
+  round: number;
+  phase: RoundPhase;
+  timeLeft: number;
+  scoreT: number;
+  scoreCT: number;
+  matchOver: boolean;
+  winner: Team | null;
+  phaseIndex: number;
+  /** The client's own body, as the host simulates it. */
+  local: { hp: number; armor: number; alive: boolean; money: number };
+}
 
 /**
  * The two sides that can actually play: `Team` also has a spectating member, and
@@ -447,6 +464,10 @@ export class Match {
           this.perShooter.set(shooterId, list);
         }
         list.length = 0;
+        // A LAN client fires for show only: the host owns every hit, so the
+        // client's bullets pass through bodies. Tracers, impacts and muzzle
+        // flash still play, and nothing is ever killed twice.
+        if (this.mirror) return list;
         for (let i = 0; i < this.hitboxes.length; i++) {
           const hitbox = this.hitboxes[i];
           const actor = this.byId.get(hitbox.entityId);
@@ -566,6 +587,10 @@ export class Match {
    */
   tick(humanCmd: InputCommand, dt: number): void {
     this.now += dt;
+    if (this.mirror) {
+      this.tickMirror(humanCmd, dt);
+      return;
+    }
     this.updateRoundClock(dt);
     this.refreshHitboxes();
 
@@ -597,6 +622,69 @@ export class Match {
   /** Humans this machine does not drive: the LAN peers, in player order. */
   get remoteHumans(): readonly Player[] {
     return this.players.filter((p) => p !== this.local && !p.isBot);
+  }
+
+  // ---------------------------------------------------------------------------
+  // LAN client mode (a mirror of a host's authoritative match)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * One tick of a LAN client: move only the body this machine owns.
+   *
+   * The host decides everything else — who died, what the clock says, which round
+   * it is — and pushes those facts back over the wire (`applyNetState`). Running
+   * `updateRoundClock`, the bot AI or a second hit resolution here would create a
+   * private, disagreeing copy of the match, so this path does none of them.
+   */
+  private tickMirror(humanCmd: InputCommand, dt: number): void {
+    const local = this.local;
+    local.canBuyNow = this.canBuy(local);
+    local.step(humanCmd, dt, this.now, this.moneyOf(local.id));
+    this.updateWeaponsOnGround(local, humanCmd);
+    this.refreshHitboxes();
+  }
+
+  /**
+   * Adopt the host's authoritative round state.
+   *
+   * Called at the host's state rate (10 Hz). On a round change the local body is
+   * respawned with the stage's free gun, because a client never runs
+   * `beginRound` and would otherwise carry last round's corpse, position and
+   * loadout into the next one.
+   */
+  applyNetState(state: NetRoundState): void {
+    const roundChanged = state.round !== this.roundNumber;
+    this.roundNumber = state.round;
+    this.phase = state.phase;
+    this.timeLeft = state.timeLeft;
+    this.scoreT = state.scoreT;
+    this.scoreCT = state.scoreCT;
+    this.matchOver = state.matchOver;
+    this.winner = state.winner;
+    this.phaseIndex = state.phaseIndex;
+
+    const local = this.local;
+    if (roundChanged) {
+      const phase = phaseForRound(this.mode, Math.max(1, state.round));
+      const side: Side = local.team === 'T' ? 'T' : 'CT';
+      const spawns = this.map.spawns.filter((s) => s.team === local.team);
+      const spawn = spawns.length > 0 ? spawns[0] : null;
+      this.groundWeapons.length = 0;
+      this.deaths.length = 0;
+      local.respawn(spawn ? spawn.pos : { x: 0, y: 64, z: 0 }, 100, 0, false);
+      if (spawn) local.state.yaw = spawn.yaw;
+      local.resetRoundLoadout(this.mode.pistols[side]);
+      const starter = phase.starter?.[side];
+      if (starter) local.giveWeapon(starter, true);
+      local.refillAllAmmo();
+      this.bus.emit('spawn', { actorId: local.id, team: local.team });
+    }
+
+    // Health, armour and money are the host's numbers; the client never argues.
+    local.state.health = state.local.hp;
+    local.state.armor = state.local.armor;
+    local.state.alive = state.local.alive;
+    this.money.set(local.id, state.local.money);
   }
 
   /**
@@ -1038,6 +1126,27 @@ export class Match {
   /** Does the current stage allow buying this weapon kind? */
   phaseAllowsBuy(kind: WeaponKind): boolean {
     return this.phaseRule.buy.includes(kind);
+  }
+
+  /**
+   * Every item id the buy menu may offer this round: the stage's weapon kinds
+   * plus the gear that mode allows. The menu filters on this exact list, so the
+   * UI and `buy()` can never disagree about what is locked.
+   */
+  allowedBuyItems(): readonly string[] {
+    const kinds = this.phaseRule.buy;
+    const out: string[] = [];
+    for (const category of BUY_MENU) {
+      for (const id of category.items) {
+        const def = weaponById(id);
+        if (def && kinds.includes(def.kind)) out.push(id);
+      }
+    }
+    for (const id of EQUIPMENT_IDS) {
+      if (id === 'defusekit' && !this.mode.bomb) continue;
+      out.push(id);
+    }
+    return out;
   }
 
   /** Buy a weapon or equipment item. The result tells the UI which sound to play. */

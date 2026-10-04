@@ -81,6 +81,22 @@ export interface BombSiteRegion {
   spots: Vec3[];
 }
 
+/**
+ * A whole-area floor wash: one district of the map painted in its own hue so the
+ * floor is not a single flat tint (see `render/Signs.ts` for the quads). Purely
+ * decorative — paint touches no brush, no collision volume and no nav node.
+ */
+export interface PaintZone {
+  name: string;
+  minX: number;
+  minZ: number;
+  maxX: number;
+  maxZ: number;
+  /** Floor height of that district (a raised deck sits on a 128 u plate). */
+  floorY: number;
+  color: number;
+}
+
 /** Map data: consumed by renderer, collision, navigation and bot tactics. */
 export interface MapData {
   name: string;
@@ -96,6 +112,11 @@ export interface MapData {
   radar: { originX: number; originZ: number; scale: number };
   /** Optional T/CT spawn facing boxes for buy-zone checks. */
   buyZones: { team: Team; min: Vec3; max: Vec3 }[];
+  /**
+   * Optional district paint. A map that leaves this empty falls back to the
+   * legacy `SIGN_ZONES` table, which is authored for de_dust2_lite's areas.
+   */
+  paint?: readonly PaintZone[];
 }
 
 /** Result of a world raycast. */

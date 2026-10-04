@@ -50,6 +50,7 @@ import {
   tileUv,
 } from '../src/render/Signs';
 import { buildDust2Lite } from '../src/world/maps/de_dust2_lite';
+import { buildAimDuelLite } from '../src/world/maps/aim_duel_lite';
 import { calloutLabel } from '../src/ui/pure';
 import {
   VIEW_NEAR_LIMIT,
@@ -570,6 +571,33 @@ describe('world signs', () => {
 
     // The wash is a decal: no brush of the map gained anything.
     expect(map.brushes.length).toBe(136);
+  });
+
+  it('paints the districts the map itself declares, not dust2 ones', () => {
+    const duel = buildAimDuelLite();
+    const zones = duel.paint ?? [];
+    // Every walkable area of the arena carries its own wash — except the two
+    // staircases: paint is one flat quad at one floor height, so it cannot
+    // follow 8 treads, and a wash there would just be a rectangle floating
+    // through the steps.
+    const areas = new Set(duel.nav.map((n) => n.area));
+    areas.delete('TRamp');
+    areas.delete('CTRamp');
+    expect(new Set(zones.map((z) => z.name))).toEqual(areas);
+    expect(zones.length).toBeGreaterThan(0);
+
+    const duelPaint = planSigns(duel).filter((p) => p.kind === 'paint');
+    expect(duelPaint.length).toBe(zones.length);
+    for (const entry of duelPaint) {
+      expect(entry.upright).toBe(false);
+      // Dust2's zones run out to x 2145 / z 2855: the arena is half that, so a
+      // stale table painted onto it would immediately stick out past the shell.
+      expect(Math.abs(entry.x) + entry.size * 0.5).toBeLessThanOrEqual(1024);
+      expect(Math.abs(entry.z) + (entry.stretch ?? 0) * 0.5).toBeLessThanOrEqual(1440);
+      expect(entry.y).toBeGreaterThan(0);
+    }
+    // The deck washes sit on top of the 128 u plate, not inside it.
+    expect(Math.max(...duelPaint.map((p) => p.y))).toBeGreaterThan(128);
   });
 
   it('packs every label into an atlas that fits the grid', () => {

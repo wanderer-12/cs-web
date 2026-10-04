@@ -242,6 +242,47 @@ describe('duel arena — module contract', () => {
     // A duel map is a fraction of dust2 (6144 x 6144): this one is ~16%.
     expect(spanX * spanZ).toBeLessThan(6144 * 6144 * 0.2);
   });
+
+  it('paints its own districts, all inside the shell and mirror-symmetric', () => {
+    const map = buildAimDuelLite();
+    const zones = map.paint ?? [];
+    expect(zones.length).toBeGreaterThan(0);
+    // One wash per walkable area, minus the two staircases: a flat quad cannot
+    // follow stepped treads, so the ramps are deliberately left unpainted.
+    const areas = new Set(map.nav.map((n) => n.area));
+    areas.delete('TRamp');
+    areas.delete('CTRamp');
+    expect(new Set(zones.map((z) => z.name))).toEqual(areas);
+
+    const Pairs: Record<string, string> = {
+      TSpawn: 'CTSpawn',
+      CTSpawn: 'TSpawn',
+      TDeck: 'CTDeck',
+      CTDeck: 'TDeck',
+      WestLane: 'EastLane',
+      EastLane: 'WestLane',
+      TMid: 'CTMid',
+      CTMid: 'TMid',
+      Mid: 'Mid', // the centre is its own mirror image
+    };
+    for (const zone of zones) {
+      // Inside the walls (the shell's inner faces are x +/-960, z +/-1344).
+      expect(zone.minX).toBeGreaterThanOrEqual(-960);
+      expect(zone.maxX).toBeLessThanOrEqual(960);
+      expect(zone.minZ).toBeGreaterThanOrEqual(-1344);
+      expect(zone.maxZ).toBeLessThanOrEqual(1344);
+      expect(zone.maxX).toBeGreaterThan(zone.minX);
+      expect(zone.maxZ).toBeGreaterThan(zone.minZ);
+      // The 180-degree rotation maps each zone exactly onto its partner.
+      const partner = zones.find((z) => z.name === Pairs[zone.name]);
+      expect(partner, `no mirror for ${zone.name}`).toBeDefined();
+      expect(partner?.minX).toBe(-zone.maxX);
+      expect(partner?.maxX).toBe(-zone.minX);
+      expect(partner?.minZ).toBe(-zone.maxZ);
+      expect(partner?.maxZ).toBe(-zone.minZ);
+      expect(partner?.floorY).toBe(zone.floorY);
+    }
+  });
 });
 
 /** Exported for the map-data type test below. */

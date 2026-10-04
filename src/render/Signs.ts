@@ -20,7 +20,7 @@
 // =============================================================================
 
 import * as THREE from 'three';
-import type { AABB, BombSiteRegion, MapData, Vec3 } from '../core/types';
+import type { AABB, BombSiteRegion, MapData, PaintZone, Vec3 } from '../core/types';
 import { brushToAabb } from '../world/trace';
 import { calloutLabel } from '../ui/pure';
 import { mergeParts } from './parts';
@@ -97,26 +97,19 @@ export interface SignPlan {
 }
 
 /**
- * District paint: wash a whole area's floor in its own hue. The audit measured
- * 99.5% of the walkable floor sharing one tint (`sand` 0xd8c7a1) with 12 of 18
- * named areas identical, which is most of why the map reads as one maze. Paint
- * is a flat, translucent quad at floor level: it is occluded by walls the way
- * any floor decal is, and it touches no brush, no baked nav node and no
- * collision volume, so movement and the green test suite are untouched.
+ * Legacy district paint for de_dust2_lite, kept as the fallback for any map that
+ * does not carry its own `paint` zones. Wash a whole area's floor in its own
+ * hue. The audit measured 99.5% of the walkable floor sharing one tint (`sand`
+ * 0xd8c7a1) with 12 of 18 named areas identical, which is most of why the map
+ * reads as one maze. Paint is a flat, translucent quad at floor level: it is
+ * occluded by walls the way any floor decal is, and it touches no brush, no
+ * baked nav node and no collision volume, so movement and the green test suite
+ * are untouched.
  *
  * Rectangles stay inside each area's walls (they may safely overrun — the wall
  * base hides the spill — but there is no reason to).
  */
-export const SIGN_ZONES: readonly {
-  name: string;
-  minX: number;
-  minZ: number;
-  maxX: number;
-  maxZ: number;
-  /** Floor height of that district (A site sits on a 128 u plate). */
-  floorY: number;
-  color: number;
-}[] = [
+export const SIGN_ZONES: readonly PaintZone[] = [
   { name: 'TSpawn', minX: -515, minZ: 2065, maxX: 515, maxZ: 2855, floorY: 0, color: 0xb8a17a },
   { name: 'CTSpawn', minX: -515, minZ: -2855, maxX: 515, maxZ: -2065, floorY: 0, color: 0x8f9ab8 },
   { name: 'Mid', minX: -215, minZ: -440, maxX: 215, maxZ: 1990, floorY: 0, color: 0x86a9bd },
@@ -254,9 +247,17 @@ function planSpawnSigns(map: MapData): SignPlan[] {
   return out;
 }
 
-/** Paint entries, drawn first so labels blend over their own district wash. */
-function planDistrictPaint(): SignPlan[] {
-  return SIGN_ZONES.map((zone) => ({
+/**
+ * Paint entries, drawn first so labels blend over their own district wash.
+ *
+ * Zones come from the map itself (`MapData.paint`) so each arena paints its own
+ * districts; only a map that declares none — de_dust2_lite — falls back to the
+ * legacy {@link SIGN_ZONES} table. Painting dust2's coordinates onto the duel
+ * arena used to wash random 5 x 8 m patches of its floor.
+ */
+function planDistrictPaint(map: MapData): SignPlan[] {
+  const zones = map.paint && map.paint.length > 0 ? map.paint : SIGN_ZONES;
+  return zones.map((zone) => ({
     key: 'paint',
     label: '',
     kind: 'paint' as const,
@@ -277,7 +278,7 @@ function planDistrictPaint(): SignPlan[] {
  * District paint comes first so the labels land on top of their own wash.
  */
 export function planSigns(map: MapData): SignPlan[] {
-  const out: SignPlan[] = planDistrictPaint();
+  const out: SignPlan[] = planDistrictPaint(map);
   const siteCallouts = new Map<string, BombSiteRegion>();
   for (const site of map.sites) {
     siteCallouts.set(site.site === 'A' ? 'ASite' : 'BSite', site);

@@ -149,6 +149,20 @@ export const CSS = `
   border-radius:.2em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
 
+/* ===================== LAN connection line ===================== */
+/* One quiet line at the bottom centre: whether the other machine is in the
+   duel. Centre-bottom is empty in every layout, so it can never cover the
+   crosshair (57% down) or the corner bands. */
+.hud-lan{
+  position:absolute; left:50%; bottom:1.7em; transform:translateX(-50%);
+  max-width:70vw; padding:.2em .85em; border-radius:.3em;
+  font-size:.86rem; letter-spacing:.08em; color:#a9b7c9;
+  background:rgba(6,9,13,.55); border:1px solid rgba(255,255,255,.12);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.hud-lan.hud-lan-ok{ color:#8affd1; border-color:rgba(138,255,209,.38); }
+.hud-lan.hud-lan-bad{ color:#ff9aa8; border-color:rgba(255,154,168,.38); }
+
 /* ===================== kill feed (top-right) ===================== */
 .hud-feed{
   position:absolute; right:1.1em; top:1.1em;
@@ -433,6 +447,38 @@ export const CSS = `
 .btn.hud-ghost:hover{ background:rgba(255,255,255,.12); }
 .menu-btns{ display:flex; gap:.55em; flex-wrap:wrap; justify-content:center; margin-bottom:.9em; }
 .menu-foot{ margin-top:.9em; font-size:.7rem; color:#7d8797; letter-spacing:.08em; }
+
+/* ---------- start menu (pre-engine mode picker) ---------- */
+.hud-startmenu{ z-index:200; }
+.hud-startmenu .frame{ width:min(78em,94vw); }
+.hud-startmenu .hud-menu-inner{ align-items:stretch; }
+.hud-startmenu .menu-hero{ flex:0 0 54%; }
+.hud-startmenu .start-btn{
+  display:flex; flex-direction:column; align-items:flex-start; gap:.1em;
+  flex:1 1 46%; text-align:left; text-transform:none; letter-spacing:0;
+  padding:.55em .8em; font-size:.92rem;
+}
+.hud-startmenu .start-btn-label{ font-weight:800; letter-spacing:.04em; }
+.hud-startmenu .start-btn-hint{
+  font-size:.72rem; font-weight:500; letter-spacing:0; opacity:.72; text-transform:none;
+}
+.btn.btn-primary{ background:#ffd166; color:#0b0f14; }
+.hud-startmenu .start-row{
+  display:flex; align-items:center; gap:.6em; justify-content:center; margin-bottom:.7em;
+}
+.hud-startmenu .start-label{ font-size:.78rem; color:#b9c4d2; letter-spacing:.12em; }
+.hud-startmenu .start-input{
+  font:inherit; font-size:.85rem; padding:.3em .5em; min-width:16em;
+  color:#eef3fb; background:rgba(255,255,255,.06);
+  border:1px solid rgba(255,255,255,.25); border-radius:.25em;
+}
+.hud-startmenu .start-input:focus{ outline:none; border-color:#ffd166; }
+.hud-startmenu .panel-title{ text-align:center; margin-top:.5em; }
+.hud-lanbox{
+  margin-top:.6em; font-size:.78rem; color:#cfd8e4; background:rgba(255,255,255,.05);
+  border:1px solid rgba(255,255,255,.14); border-radius:.3em; padding:.5em .7em;
+  text-align:left; word-break:break-all;
+}
 `;
 
 // ---------------------------------------------------------------------------
