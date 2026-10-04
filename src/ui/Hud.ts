@@ -34,6 +34,7 @@ import {
   announceColor,
   arrowPoints,
   blipRadius,
+  calloutLabel,
   clamp,
   crosshairPixels,
   damageIndicatorState,
@@ -46,6 +47,7 @@ import {
   hitMarkerAlpha,
   mapLabel,
   projectToRadar,
+  radarInBounds,
   scoreLine,
   teamColor,
   toFinite,
@@ -101,6 +103,15 @@ const BOMB_COLOR = '#ff3b3b';
 
 const MAX_FEED = 5;
 const MAX_DAMAGE_ARROWS = 6;
+
+/**
+ * Radar floor half-size in world units. The nav mesh bakes ≤ MAX_SEG (240 u)
+ * segments, so a 264 u square per node joins every corridor with nothing to
+ * spare (measured max nearest-neighbour gap: 234.4 u over 311 nodes).
+ */
+const RADAR_FLOOR_HALF = 132;
+/** A brush at least this tall is a wall; everything shorter is left to nav. */
+const RADAR_WALL_MIN_THICK = 112;
 
 // ---------------------------------------------------------------------------
 // Hud
@@ -997,20 +1008,42 @@ export class Hud {
       g.stroke();
     }
 
-    const floors: [number, number, number, number][] = [];
+    // --- walkable floor -----------------------------------------------------
+    // The NAV MESH decides what counts as floor, not brush thickness. Ground
+    // slabs are 64 u thick while walls are 112+ u tall, so the old
+    // "size.y <= 48 means floor" test classified 117 of 135 brushes as wall and
+    // painted the whole radar one dark rectangle — the single biggest reason an
+    // enemy never appeared on it. Every node contributes a square to ONE path,
+    // so the union fills once at a flat alpha instead of stacking up brighter
+    // wherever nodes overlap.
+    const unitA = projectToRadar(map, { x: 0, y: 0, z: 0 });
+    const unitB = projectToRadar(map, { x: 1000, y: 0, z: 0 });
+    const pxPerUnit = (Math.abs(unitB.u - unitA.u) * size) / 1000;
+    const halfPx = Math.max(2, RADAR_FLOOR_HALF * pxPerUnit);
+    g.globalAlpha = 0.34;
+    g.fillStyle = '#7fa6c9';
+    g.beginPath();
+    for (const node of map.nav ?? []) {
+      const p = projectToRadar(map, node.pos);
+      if (!radarInBounds(p.u, p.v, 0.05)) continue;
+      g.rect(p.u * size - halfPx, p.v * size - halfPx, halfPx * 2, halfPx * 2);
+    }
+    g.fill();
+    g.globalAlpha = 1;
+
+    // Only real walls are painted dark: anything at least a person tall
+    // (RADAR_WALL_MIN_THICK). Crates, the car and stair treads are left to the
+    // nav fill and the callout labels.
     const walls: [number, number, number, number][] = [];
     for (const brush of map.brushes ?? []) {
       if (brush.clip) continue; // clip brushes are invisible collision volumes
+      if (Math.abs(toFinite(brush.size?.y, 0)) < RADAR_WALL_MIN_THICK) continue;
       const box = this.brushFootprint(brush, size);
       if (!box) continue;
-      if (toFinite(brush.size?.y, 0) <= 48) floors.push(box);
-      else walls.push(box);
+      walls.push(box);
     }
 
-    g.globalAlpha = 0.3;
-    g.fillStyle = '#8fb0cf';
-    for (const b of floors) g.fillRect(b[0], b[1], b[2], b[3]);
-    g.globalAlpha = 0.92;
+    g.globalAlpha = 0.9;
     g.fillStyle = '#2f3d4d';
     for (const b of walls) g.fillRect(b[0], b[1], b[2], b[3]);
     g.globalAlpha = 1;
@@ -1047,16 +1080,33 @@ export class Hud {
       g.fillText(site.site, (cx / poly.length) * size, (cy / poly.length) * size);
     }
 
+    // Every callout, not the first 14 — a name you cannot see is a name that does
+    // not exist. De-clutter cheaply instead: skip a label whose box would land on
+    // top of one already drawn this frame.
     g.font = `${Math.round(size * 0.029)}px ui-monospace, monospace`;
-    g.fillStyle = 'rgba(226,236,247,0.45)';
-    let shown = 0;
+    g.fillStyle = 'rgba(226,236,247,0.55)';
+    const labelBoxes: [number, number, number, number][] = [];
     for (const calloutName of Object.keys(map.callouts ?? {})) {
-      if (shown >= 14) break;
       const at = map.callouts[calloutName];
       if (!at) continue;
       const p = projectToRadar(map, at);
-      g.fillText(calloutName.toUpperCase(), p.u * size, p.v * size);
-      shown++;
+      if (!radarInBounds(p.u, p.v, 0)) continue;
+      const px = p.u * size;
+      const py = p.v * size;
+      const label = calloutLabel(calloutName);
+      // ui-monospace advance width is ~0.6em; 0.029 * size is the font size.
+      const halfW = label.length * size * 0.00875 + 2;
+      const halfH = size * 0.016 + 2;
+      let clash = false;
+      for (const box of labelBoxes) {
+        if (Math.abs(box[0] - px) < box[2] + halfW && Math.abs(box[1] - py) < box[3] + halfH) {
+          clash = true;
+          break;
+        }
+      }
+      if (clash) continue;
+      g.fillText(label, px, py);
+      labelBoxes.push([px, py, halfW, halfH]);
     }
 
     // compass

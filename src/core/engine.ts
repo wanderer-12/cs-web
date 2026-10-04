@@ -26,6 +26,9 @@ import { Match } from '../game/game';
 import { CameraRig } from '../player/cameraRig';
 import { InputSystem } from '../player/input';
 import type { Player } from '../player/player';
+import { CharacterRenderer } from '../render/Characters';
+import { ViewModel } from '../render/ViewModel';
+import { SignLayer } from '../render/Signs';
 import { Hud, createHud } from '../ui/Hud';
 import { sortedScoreRows, type HudFrameState, type RadarBlip, type ScoreRow } from '../ui/pure';
 import { buildMapMeshes, type MapMeshes } from '../world/MapGeometry';
@@ -38,7 +41,7 @@ import { EventBus } from './events';
 import { GameLoop } from './loop';
 import { clamp01, distance, normalize, sub, v3 } from './math';
 import { Rng } from './rng';
-import { EMPTY_BUTTONS, type InputCommand, type MapData, type Team, type Vec3 } from './types';
+import { EMPTY_BUTTONS, type ActorState, type InputCommand, type MapData, type Team, type Vec3 } from './types';
 
 // ---------------------------------------------------------------------------
 // tuning constants that only matter to the shell
@@ -122,6 +125,12 @@ export class Engine {
   readonly hud: Hud;
   readonly audio: AudioEngine;
   readonly vfx: VfxSystem;
+  /** Actor bodies: one InstancedMesh layer for the whole match. */
+  readonly characters: CharacterRenderer;
+  /** The first-person weapon, drawn in its own scene and pass. */
+  readonly viewModel: ViewModel;
+  /** Floor labels / spawn placards: the world's own nametags (1 draw call). */
+  readonly signs: SignLayer;
   readonly loop: GameLoop;
   /** Rebuilt by `restart()`, hence not readonly. */
   match: Match;
@@ -134,6 +143,8 @@ export class Engine {
   private readonly muzzleLight: THREE.PointLight;
   private readonly offs: (() => void)[] = [];
   private readonly resizeHandler: () => void;
+  /** Reused actor list for the character layer (keeps the frame loop alloc-free). */
+  private readonly actorScratch: ActorState[] = [];
 
   // scratch, so the frame loop never allocates
   private readonly tmpCamDir = new THREE.Vector3();
@@ -167,6 +178,11 @@ export class Engine {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.0;
     this.renderer.setClearColor(0x10131a, 1);
+    // The frame is two `render()` calls (world, then the view model), so the
+    // counters must be reset by hand: otherwise `EngineStats.drawCalls` would
+    // report the weapon pass alone, and with auto-reset the second call would
+    // silently wipe the world's numbers too.
+    this.renderer.info.autoReset = false;
 
     // --- world -------------------------------------------------------------
     this.map = buildDust2Lite();
@@ -197,6 +213,17 @@ export class Engine {
     );
     this.muzzleLight.name = 'muzzle-light';
     this.scene.add(this.muzzleLight);
+
+    // The bodies of the ten actors. Before this layer existed an enemy was only
+    // ever a muzzle spark and a tracer: nothing in the sim creates a mesh.
+    this.characters = new CharacterRenderer(this.scene);
+    // The gun in the player's hands, drawn in its own scene and pass (see
+    // render/ViewModel.ts for why it cannot live in the world scene).
+    this.viewModel = new ViewModel(this.camera);
+    // Readability pass: the audit of de_dust2_lite measured 12 of 18 named areas
+    // sharing one floor tint and 4 of 5 spawns facing a blank wall, so the world
+    // now labels itself. One merged atlas mesh, no lighting, 1 draw call.
+    this.signs = new SignLayer(this.scene, this.map);
 
     this.audio = new AudioEngine((id) => weaponById(id));
     this.audio.attach(this.bus);
@@ -277,6 +304,9 @@ export class Engine {
     this.audio.detach?.();
     this.audio.dispose();
     this.vfx.dispose();
+    this.characters.dispose();
+    this.viewModel.dispose();
+    this.signs.dispose();
     this.sky.dispose();
     this.scene.remove(this.mapMeshes.group);
     this.renderer.dispose();
@@ -434,6 +464,10 @@ export class Engine {
   private render(frameDt: number): void {
     if (this.disposed) return;
 
+    // Two passes draw this frame (world + weapon), and autoReset is off, so the
+    // counter bucket is emptied here by hand: see the constructor.
+    this.renderer.info.reset();
+
     this.frameDt = frameDt;
     const local = this.match.local;
     const view = this.viewPlayer();
@@ -455,6 +489,11 @@ export class Engine {
       );
     }
     this.camera.updateMatrixWorld();
+
+    // Bodies and weapon both follow the camera that was just composed; the actor
+    // the camera sits inside is the one the character layer hides.
+    this.syncCharacters(view, frameDt);
+    this.updateViewModel(view, frameDt);
 
     // Muzzle light rides the view direction; the VFX layer owns the envelope.
     this.camera.getWorldDirection(this.tmpCamDir);
@@ -491,6 +530,64 @@ export class Engine {
     }
 
     this.renderer.render(this.scene, this.camera);
+
+    // Second pass: the weapon on top of a cleared depth buffer, so the barrel can
+    // never clip through a wall the player is standing against. Same camera object,
+    // so it is already in step with the world pass; nothing is cleared in colour.
+    if (this.viewModel.visible) {
+      this.renderer.autoClear = false;
+      this.renderer.clearDepth();
+      this.renderer.render(this.viewModel.scene, this.viewModel.renderCamera);
+      this.renderer.autoClear = true;
+    }
+  }
+
+  /**
+   * Hand the ten actors to the character layer. `actorScratch` is reused so the
+   * frame path allocates nothing, and slot i always means `players[i]`, which is
+   * what lets the colour cache in `CharacterRenderer` skip unchanged writes.
+   */
+  private syncCharacters(view: Player, frameDt: number): void {
+    const scratch = this.actorScratch;
+    scratch.length = 0;
+    for (const p of this.match.players) scratch.push(p.state);
+    this.characters.sync(scratch, {
+      hiddenId: view.id,
+      viewerTeam: view.team,
+      dt: frameDt,
+    });
+  }
+
+  /**
+   * Compose the first-person weapon from the rig pose the camera just used. The
+   * muzzle offset goes straight to the VFX layer so flash, tracer and muzzle
+   * light all leave the visible barrel instead of the eye.
+   */
+  private updateViewModel(view: Player, frameDt: number): void {
+    const local = this.match.local;
+    const def = local.weapon;
+    const state = local.state;
+    if (view === local) this.viewModel.setWeapon(def.kind);
+    const pose = this.rig.viewPose;
+    const weaponState = local.ammo.get(def.id);
+    this.viewModel.update({
+      bobX: pose.bobX,
+      bobY: pose.bobY,
+      dip: pose.dip,
+      punchYaw: pose.punchYaw,
+      punchPitch: pose.punchPitch,
+      swayYaw: pose.swayYaw,
+      swayPitch: pose.swayPitch,
+      speedNorm: Math.min(1, Math.hypot(state.vel.x, state.vel.z) / MOVE.maxSpeed),
+      alive: view === local && state.alive,
+      scoped: !!weaponState?.scoped,
+      reloading: local.isReloading,
+      reloadTime: def.reloadTime,
+      drawTime: def.drawTime,
+      dt: frameDt,
+    });
+    const muzzle = this.viewModel.muzzleOffset;
+    this.vfx.setMuzzleOffset(muzzle.forward, muzzle.right, muzzle.down);
   }
 
   private resize(): void {

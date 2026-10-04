@@ -109,6 +109,14 @@ stats=0
 武器表现全部按 CS 数值建模：步枪 AK-47 / M4A4 / M4A1-S / Galil / AWP / SSG08，冲锋枪 MP9 / MAC-10 / P90，手枪 Glock / USP / P250 / Five-seveN / Deagle，霰弹枪 Nova，以及刀、C4（共 17 件）。
 每把枪都有**固定可背的弹道图案**（前 10 发的偏移表 + 种子化随机）、独立的头部/胸腹/胃/腿判定、护甲吸收与穿透。
 
+### 地图可读性（雷达 + 世界标签 + 分区染色）
+
+第一版地图是**能用但读不懂**的：几何审计（136 个 brush、311 个连通导航节点、封闭边界，见 `tests/map.spec.ts`）证明它不坏，只是到处长一个样——99.5% 的可行走地板是同一个 `sand` 色调，18 个命名区域里 12 个地板颜色完全相同，7 种墙高、零屋顶，5 个出生点里 4 个正对一面 7.3 m 的空白墙；而唯一的导航提示（雷达）因为一个判据错误画成了一整块深色矩形。三处修复：
+
+* **雷达地板不再看 brush 厚度**。原判据 `brush.size.y <= 48 → 地板`，但四块地面 slab 本身厚 64，于是 117/135 个 brush 被当成墙画成深色 → 雷达变成一块黑板。现在**地板由导航网格铺出来**（`RADAR_FLOOR_HALF = 132`，`map.nav` 的 311 个节点各铺一块方块，用**同一条 path 一次性 `fill()`** 做并集，所以重叠处不会叠亮），**墙只画厚度 ≥ 112 单位（一人高）的 brush**（`RADAR_WALL_MIN_THICK`），楼梯、木箱、B 车这些矮件交给导航填充。
+* **世界自己标注地名**（`src/render/Signs.ts`）。此前只有雷达有 callout 标签，还被上面的 bug 挡着，且只画前 14 个（共 21 个）。现在 21 个全上雷达（26 px 防重叠框，挤不下就跳过而不是截断），并且**在地图里也立起牌子**：地板地名 300 单位、A/B 点位大字 420 单位（琥珀色）、两队出生点墙面挂牌 320 单位（`T SPAWN` / `CT SPAWN`，从出生点沿朝向用 AABB slab 射线打最近墙面，打不到就不立，避免悬空牌）。全部合并成**一个 mesh、一张 256 px canvas 图集、1 个 draw call**（`renderOrder = 2`，在地图之上、角色轮廓之下），不参与光照。
+* **七个分区各自染色**（`SIGN_ZONES`：出生点 / Mid / LongA / Tunnels / A 点 / B 点）。用**贴花 quad**而不是改 brush 色调：brush 的 `tint` 是绝对颜色且按 `材质|色调` 分桶（多一个地面色就多一个 draw call），要换色得把 4 块巨大地面 slab 拆成区块（漏一块就是地板上的一个洞），而垫一层薄 brush 又会把真实地板抬高 2 单位并影响 `floorTopAt` 与导航断言。贴花不碰 brush、不碰烘焙导航、不碰碰撞——回归测试直接断言 `map.brushes.length === 136`。
+
 ---
 
 ## 3. 「CS 手感」是怎么落地的
@@ -168,6 +176,7 @@ stats=0
 
 渲染帧率无法在无浏览器环境自动测量（没有 Playwright），预算按计划设为：**draw calls < 80、三角形 < 300k**。
 地图几何按 `(材质, 色调)` 合批（`MapGeometry.ts`：约 140 个轴对齐盒子合成十余个 mesh），天空是一个 9000 半径的球面。
+可见层另有：**角色**（3 个 `InstancedMesh`：身体 / 尸体 / 队伍色轮廓，16 个槽位）、**第一人称武器**（独立 `Scene` + `clearDepth` 的第二遍渲染）、**世界标签与分区贴花**（1 个合并 mesh、1 张图集）；弹孔/血迹贴花上限 192。
 在游戏里按 `F3` 或加 `?stats=1` 可看到实时的 `drawCalls / triangles / mapDrawCalls / mapTriangles / programs / textures`。
 
 ### 体积
@@ -175,11 +184,11 @@ stats=0
 | 产物 | 原始 | gzip |
 |---|---|---|
 | `dist/index.html` | 1.42 KB | 0.81 KB |
-| 游戏代码 `index-*.js` | 267.01 KB | 82.75 KB |
-| Three.js `three-*.js`（独立 chunk，可缓存） | 538.30 KB | 133.34 KB |
-| **首屏合计** | 806.7 KB | **216.9 KB**（预算 900 KB） |
+| 游戏代码 `index-*.js` | 285.76 KB | 89.46 KB |
+| Three.js `three-*.js`（独立 chunk，可缓存） | 540.15 KB | 133.46 KB |
+| **首屏合计** | 827.3 KB | **223.7 KB**（预算 900 KB） |
 
-`pnpm build` = `tsc --noEmit && vite build`，52 个模块，构建约 0.24 s。
+`pnpm build` = `tsc --noEmit && vite build`，56 个模块，构建约 0.17 s。
 
 ---
 
@@ -207,8 +216,9 @@ work/web-fps/
 │  ├─ main.ts                  # 引导 + URL 参数 + F3 性能打印
 │  ├─ core/                    # config（所有数值常量）/ types / math / rng / events / loop / engine
 │  ├─ player/                  # movement（扫掠 AABB 移动）/ player / input（键位+指针锁）/ cameraRig（sway/punch/bob）
-│  ├─ world/                   # world（实体+射线）/ trace（扫掠碰撞）/ MapGeometry / textures / materials / sky
+│  ├─ world/                   # world（实体+射线）/ trace（扫掠碰撞）/ MapGeometry / sky / textures+materials（未启用的贴图管线）
 │  │  └─ maps/de_dust2_lite.ts # 地图：几何 + 碰撞 + 出生点 + A/B 点多边形 + 路点
+│  ├─ render/                  # 可见层：Characters（角色+轮廓+尸体）/ ViewModel（第一人称枪）/ Signs（地名牌+分区贴花）/ parts（几何合批工具）
 │  ├─ combat/                  # weaponDefs（17 把枪数值）/ ballistics（散布+穿透+伤害）/ recoil / hitbox / CombatSystem
 │  ├─ ai/                      # Bot（决策/瞄准/开火条件）/ BotController / navigation（309 节点导航图）/ Bot.md
 │  ├─ game/                    # game.ts —— 回合状态机、经济、胜负、埋拆包、换边
@@ -219,7 +229,7 @@ work/web-fps/
 ├─ launcher/                    # Windows 启动器：play.ps1（主脚本）/ start.cmd（入口）/ settings.txt（默认启动参数）
 ├─ 启动游戏.cmd                 # 双击即玩（开发模式）
 ├─ 启动器菜单.cmd               # 双击打开菜单
-└─ tests/                      # 14 个 Vitest 规格
+└─ tests/                      # 15 个 Vitest 规格
 ```
 
 ### 与 `PLAN.md` 的差异（如实记录）
@@ -236,11 +246,11 @@ work/web-fps/
 ## 8. 测试
 
 ```bash
-pnpm test              # 14 个规格 / 418 条测试，本机约 21 秒
+pnpm test              # 15 个规格 / 443 条测试，本机约 14 秒
 pnpm typecheck         # tsc --noEmit
 ```
 
-* 14 个规格文件覆盖：运动物理（15 条，含楼梯/顶棚/连跳/脱困）、弹道与伤害（含 `whizzBy` 与 `whizz` 事件）、武器数值、命中盒、经济与回合、Bot 决策（54 条）、角色分离（4 条）、导航图、相机抖动、VFX 池、UI 纯函数、性能基准、网络协议编解码。**418 条全绿。**
+* 15 个规格文件覆盖：运动物理（15 条，含楼梯/顶棚/连跳/脱困）、弹道与伤害（含 `whizzBy` 与 `whizz` 事件）、武器数值、命中盒、经济与回合、Bot 决策（54 条）、角色分离（4 条）、导航图、相机抖动、VFX 池、UI 纯函数、性能基准、网络协议编解码、**渲染层（25 条：角色几何贴合伤害判定盒 / 尸体平躺 / 队伍色与轮廓 / 9 把武器都在近裁剪面之前 / 世界标签落点与朝向 / 分区贴花不动几何）**。**443 条全绿。**
 * 启动器（`launcher\`、三个 `.cmd`）只包装 `pnpm`，不参与构建，改它不需要跑回归。
 * 手感数值全部被测试锁住：250/130/85 速度、0.92 侧移系数、空中 30 上限、散布曲线、后坐图案、伤害与护甲、经济奖励梯度。改错一个常数就会红。
 * `pnpm test` 已把默认超时提到 120 s（长规格要模拟上万 tick），不需要额外 CLI 参数。
@@ -253,6 +263,8 @@ pnpm typecheck         # tsc --noEmit
 * **联机未实现**：`src/net/` 只有协议编解码、插值缓冲、回滚历史、预测簿记这些**已实现并测试**的部分，WebSocket 传输与服务器还没写；单机模式完全不依赖它（见 `src/net/Net.md`）。
 * **Bot 之间只做「推开」而不是真正的身体阻挡**：`Match.separatePlayers` 每 tick 把水平距离小于两个半径的存活角色各推开一半（单 tick 上限 8 单位，会把角色推进墙里的推动整条丢弃，玩家本人永不被推），所以不会再看到几个人叠在同一个坐标上，但这仍不是 CS 那种「贴住对方就过不去」的硬阻挡，拥挤时会有轻微推挤感。
 * **导航图有两处绕路**：CT 出生点北墙附近的车道节点被墙带吞掉（`nearestNode` 判为实心而丢弃），导致 CT 去 B 点会多绕一段。
+* **地图仍然没有屋顶，出生点朝向也没改**：这次修的是「读不懂」（雷达地板、世界地名标签、分区染色），没动结构和尺寸——墙只有 7 种高度、头顶空空，所以从高处看依然空旷；5 个出生点里 4 个仍然正对空白墙，只是那面墙上现在挂了 `T SPAWN` / `CT SPAWN` 牌子。
+* **贴图管线是死代码**：`src/world/materials.ts`（255 行）与 `src/world/textures.ts`（1259 行）没有任何模块 import，地图实际用 `MapGeometry` 自己的 `MeshStandardMaterial`（纯色 + 顶点明暗）。复活它前要先统一色调语义：那里的 `tint` 是**绝对颜色**而不是乘数，照直接上去会把地图压暗。
 * **T 队 AI 偏「正面强冲」**：Bot 会集体压 A 大被 CT 架枪团灭，战术多样性不足（平衡问题，不是故障）。
 * **渲染性能与画面只能人工确认**：自动化环境里没有 GPU/浏览器，`drawCalls`、三角形数、贴花上限都需要玩家按 `F3` 自查。
 * **启动器只在 Windows 上可用**：`launcher\play.ps1` 是给 Windows PowerShell 5.1 写的脚本，三个 `.cmd` 入口靠双击使用；macOS / Linux 直接用 `pnpm dev`（见第 0 节）。

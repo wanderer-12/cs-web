@@ -195,6 +195,19 @@ export function mapLabel(name: string): string {
 }
 
 /**
+ * CamelCase callout key -> screen label: `MidDoors` -> `MID DOORS`,
+ * `TSpawn` -> `T SPAWN`, `LongA` -> `LONG A`, `BTunnels` -> `B TUNNELS`.
+ * Used by both the radar labels and the world's floor signage.
+ */
+export function calloutLabel(name: string): string {
+  return String(name ?? '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
+    .trim()
+    .toUpperCase();
+}
+
+/**
  * Weapon id -> display label. Prefers the authoritative `WEAPONS` name, then
  * prettifies the id, and only falls back to the raw id when it has no letters.
  */

@@ -94,7 +94,11 @@ export interface VfxStats {
 
 const TAU = Math.PI * 2;
 
-/** Muzzle offset from the eye: ahead of it, slightly right and below the sights. */
+/**
+ * Default muzzle offset from the eye: ahead of it, slightly right and below the
+ * sights. `VfxSystem.setMuzzleOffset` overrides all three per weapon, because
+ * the gun now exists (`render/ViewModel`); these stay as the fallback.
+ */
 const MUZZLE_FORWARD = 11;
 const MUZZLE_RIGHT = 3;
 const MUZZLE_DOWN = 4;
@@ -170,11 +174,33 @@ export class VfxSystem {
     return this._flashlightPos;
   }
 
+  /**
+   * Move the muzzle flash (and the muzzle point light) onto the real barrel tip.
+   * `forward`/`right`/`down` are camera-space distances: see `render/ViewModel`,
+   * which derives them from the model it just built. Called every frame by the
+   * shell, so a weapon switch re-aims the flash on the same frame.
+   */
+  setMuzzleOffset(forward: number, right: number, down: number): void {
+    this.muzzleForward = forward;
+    this.muzzleRight = right;
+    this.muzzleDown = down;
+  }
+
   private readonly scene: Scene;
   private camera: PerspectiveCamera;
   private readonly world: VfxWorld | undefined;
   private readonly rng = new Rng(0x5eed1a7);
   private readonly camBasis: CameraBasis = createCameraBasis();
+
+  /**
+   * Barrel tip in camera space. `render/ViewModel` owns the actual geometry, so
+   * the engine pushes its muzzle here every frame; these defaults are the old
+   * eye-relative guess and only stand in before the first weapon reaches the
+   * view model.
+   */
+  private muzzleForward = MUZZLE_FORWARD;
+  private muzzleRight = MUZZLE_RIGHT;
+  private muzzleDown = MUZZLE_DOWN;
 
   // Pools (fixed size, created once) and their renderers.
   private readonly decals: DecalPool;
@@ -477,9 +503,9 @@ export class VfxSystem {
     const silenced = e.silenced === true;
 
     // --- muzzle flash (billboarded, random roll) ---
-    tmpPoint.x = e.origin.x + dir.x * MUZZLE_FORWARD + cam.rx * MUZZLE_RIGHT - cam.ux * MUZZLE_DOWN;
-    tmpPoint.y = e.origin.y + dir.y * MUZZLE_FORWARD + cam.ry * MUZZLE_RIGHT - cam.uy * MUZZLE_DOWN;
-    tmpPoint.z = e.origin.z + dir.z * MUZZLE_FORWARD + cam.rz * MUZZLE_RIGHT - cam.uz * MUZZLE_DOWN;
+    tmpPoint.x = e.origin.x + dir.x * this.muzzleForward + cam.rx * this.muzzleRight - cam.ux * this.muzzleDown;
+    tmpPoint.y = e.origin.y + dir.y * this.muzzleForward + cam.ry * this.muzzleRight - cam.uy * this.muzzleDown;
+    tmpPoint.z = e.origin.z + dir.z * this.muzzleForward + cam.rz * this.muzzleRight - cam.uz * this.muzzleDown;
     tmpRight.x = cam.rx; tmpRight.y = cam.ry; tmpRight.z = cam.rz;
     tmpUp.x = cam.ux; tmpUp.y = cam.uy; tmpUp.z = cam.uz;
     tmpView.x = cam.fx; tmpView.y = cam.fy; tmpView.z = cam.fz;
@@ -537,9 +563,9 @@ export class VfxSystem {
     }
 
     // --- muzzle light ---
-    this._flashlightPos.x = e.origin.x + dir.x * MUZZLE_FORWARD;
-    this._flashlightPos.y = e.origin.y + dir.y * MUZZLE_FORWARD;
-    this._flashlightPos.z = e.origin.z + dir.z * MUZZLE_FORWARD;
+    this._flashlightPos.x = e.origin.x + dir.x * this.muzzleForward;
+    this._flashlightPos.y = e.origin.y + dir.y * this.muzzleForward;
+    this._flashlightPos.z = e.origin.z + dir.z * this.muzzleForward;
     this._flashlightIntensity = silenced ? 0.3 : 1;
     this.flashlightExternal = false;
 

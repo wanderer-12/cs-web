@@ -42,6 +42,22 @@ export class CameraRig {
   /** Debug capture of the last composed transform. */
   readonly debug = { punchYaw: 0, punchPitch: 0, swayYaw: 0, swayPitch: 0, bobY: 0, dip: 0, eye: 0 };
 
+  /**
+   * The last composed pose, for whoever else has to follow the camera. The
+   * first-person weapon reads this every frame (`render/ViewModel`), so unlike
+   * `debug` it is written unconditionally, in release builds too.
+   */
+  readonly viewPose = {
+    bobX: 0,
+    bobY: 0,
+    dip: 0,
+    punchYaw: 0,
+    punchPitch: 0,
+    swayYaw: 0,
+    swayPitch: 0,
+    eye: 0,
+  };
+
   private smoothedMouseDX = 0;
   private smoothedMouseDY = 0;
   private shakeRngState = 0x2545f491;
@@ -182,18 +198,25 @@ export class CameraRig {
       this.debug.dip = this.dip;
       this.debug.eye = eye;
     }
+
+    // --- view model pose ---------------------------------------------------
+    // Same values the camera just used, handed to the weapon layer. Deliberately
+    // outside the DEV guard above: the gun swings in release builds too.
+    const pose = this.viewPose;
+    pose.bobX = bobX;
+    pose.bobY = bobY;
+    pose.dip = this.dip;
+    pose.punchYaw = this.punchYaw;
+    pose.punchPitch = this.punchPitch;
+    pose.swayYaw = this.swayYaw;
+    pose.swayPitch = this.swayPitch;
+    pose.eye = eye;
   }
 
   /** Trigger the landing dip from a landing speed (units/s). */
   land(vSpeed: number): void {
     const amount = Math.min(CAMERA.landingDipMax, vSpeed * CAMERA.landingDipPerSpeed);
     this.dip = -amount;
-  }
-
-  /** Where the weapon view model should sit, in camera space. */
-  viewModelOffset(out: THREE.Vector3): THREE.Vector3 {
-    out.set(0, 0, 0);
-    return out;
   }
 
   get fovDegrees(): number {
