@@ -11,6 +11,9 @@ dist-ssr/
 .DS_Store
 Thumbs.db
 
+# Windows 快捷方式（本机入口，不进版本库）
+*.lnk
+
 # 日志
 *.log
 pnpm-debug.log*
