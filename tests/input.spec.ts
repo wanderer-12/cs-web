@@ -4,6 +4,8 @@
 // The bug these tests pin down: the game ran inside a browser page, bound crouch
 // to Ctrl and never called preventDefault, so crouch-walking pressed Ctrl+W /
 // Ctrl+D / Ctrl+R — closing the tab, bookmarking and reloading mid-round.
+// Crouch now lives on left Alt (the requested binding) with C as the alternate,
+// and every key the game owns is captured while the pointer is locked.
 // =============================================================================
 
 import { describe, expect, it } from 'vitest';
@@ -97,9 +99,9 @@ describe('input bindings', () => {
     }
   });
 
-  it('crouches on C, walks on Shift and reloads on R', () => {
-    expect(DEFAULT_BINDINGS.crouch.code).toBe('KeyC');
-    expect(DEFAULT_BINDINGS.crouch.alt ?? []).toHaveLength(0);
+  it('crouches on left Alt (C as the fallback), walks on Shift and reloads on R', () => {
+    expect(DEFAULT_BINDINGS.crouch.code).toBe('AltLeft');
+    expect(DEFAULT_BINDINGS.crouch.alt ?? []).toEqual(['KeyC']);
     expect(DEFAULT_BINDINGS.walk.code).toBe('ShiftLeft');
     expect(DEFAULT_BINDINGS.reload.code).toBe('KeyR');
     expect(DEFAULT_BINDINGS.jump.code).toBe('Space');
@@ -132,7 +134,7 @@ describe('input keyboard capture', () => {
     withHost((host) => {
       const input = new InputSystem(host.canvas as HTMLCanvasElement);
       try {
-        for (const code of ['Space', 'Tab', 'ArrowDown', 'KeyW', 'KeyC', 'KeyR']) {
+        for (const code of ['Space', 'Tab', 'ArrowDown', 'KeyW', 'KeyC', 'KeyR', 'AltLeft']) {
           const event = keyEvent(code);
           host.fire('keydown', event);
           expect(event.prevented, `${code} must be captured`).toBe(true);
@@ -174,13 +176,23 @@ describe('input keyboard capture', () => {
     });
   });
 
-  it('crouches with C and ignores Ctrl', () => {
+  it('crouches with left Alt, keeps C working, and ignores Ctrl', () => {
     withHost((host) => {
       const input = new InputSystem(host.canvas as HTMLCanvasElement);
       try {
         host.fire('keydown', keyEvent('ControlLeft'));
         expect(input.isHeld('crouch')).toBe(false);
 
+        // Left Alt is the primary binding (and is captured, so Chrome's own
+        // Alt menu-focus does not steal it).
+        const alt = keyEvent('AltLeft');
+        host.fire('keydown', alt);
+        expect(input.isHeld('crouch')).toBe(true);
+        expect(alt.prevented).toBe(true);
+        host.fire('keyup', keyEvent('AltLeft'));
+        expect(input.isHeld('crouch')).toBe(false);
+
+        // C stays bound as the fallback for Alt+Tab-class combinations.
         host.fire('keydown', keyEvent('KeyC'));
         expect(input.isHeld('crouch')).toBe(true);
         host.fire('keyup', keyEvent('KeyC'));

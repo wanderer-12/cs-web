@@ -297,6 +297,24 @@ export interface WeaponDef {
 // ---------------------------------------------------------------------------
 
 export type RoundPhase = 'warmup' | 'freeze' | 'live' | 'bomb' | 'over';
+
+/**
+ * A weapon lying on the ground after a drop, a death or a swap. The magazine
+ * travels with the gun: whoever picks it up inherits exactly what was in it,
+ * which is the rule that makes "my team-mate's gun" worth walking over for.
+ */
+export interface GroundWeapon {
+  /** Match-unique instance id: two AK-47s on the floor are two guns. */
+  id: number;
+  weaponId: string;
+  kind: WeaponKind;
+  /** Rounds in the magazine when it hit the floor. */
+  ammo: number;
+  reserve: number;
+  pos: Vec3;
+  /** Match time (seconds) it was dropped at, for the renderer's settle. */
+  droppedAt: number;
+}
 export type GamePhase = 'menu' | 'buy' | 'playing' | 'roundend' | 'matchend' | 'spectating';
 
 export interface RoundState {
@@ -352,6 +370,8 @@ export interface GameEventMap {
   bombExploded: { site: 'A' | 'B' };
   bombDefused: { actorId: number };
   bombPickup: { actorId: number; dropped: boolean };
+  weaponDropped: { actorId: number; weaponId: string; pos: Vec3 };
+  weaponPickup: { actorId: number; weaponId: string; swapped: boolean };
   grenadeThrow: { actorId: number; kind: string };
   grenadeExplode: { kind: string; pos: Vec3; radius: number };
   flash: { origin: Vec3; duration: number; intensity: number };

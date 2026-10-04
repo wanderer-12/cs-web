@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { Color, InstancedMesh, Matrix4, Scene, PerspectiveCamera, Vector3, type BufferGeometry, type Mesh } from 'three';
 import { HEAD_HALF_WIDTH, HITBOX_BANDS } from '../src/combat/hitbox';
 import { CAMERA, PLAYER } from '../src/core/config';
-import type { ActorState, Team, WeaponKind } from '../src/core/types';
+import type { ActorState, GroundWeapon, Team, WeaponKind } from '../src/core/types';
 import {
   CharacterRenderer,
   MATE_RIM_DIM,
@@ -24,6 +24,13 @@ import {
   buildCorpseGeometry,
 } from '../src/render/Characters';
 import { MAX_SHADE, MIN_SHADE, mergeParts, shadedBox } from '../src/render/parts';
+import {
+  GROUND_LIFT,
+  GROUND_SHAPE,
+  GROUND_SLOTS_PER_KIND,
+  GroundWeaponRenderer,
+  buildGroundWeaponGeometry,
+} from '../src/render/GroundWeapons';
 import {
   SIGN_CALLOUT_SIZE,
   SIGN_LIFT,
@@ -95,6 +102,7 @@ function pose(over: Partial<ViewModelPose> = {}): ViewModelPose {
     punchPitch: 0,
     swayYaw: 0,
     swayPitch: 0,
+    swing: 0,
     speedNorm: 0,
     alive: true,
     scoped: false,
@@ -325,6 +333,46 @@ describe('ViewModel', () => {
     vm.update(pose({ reloading: true, reloadTime: 1, dt: 0.5, drawTime: 0.0001 }));
     expect(root().position.y).toBeLessThan(0);
     expect(root().rotation.z).not.toBe(0);
+    vm.dispose();
+  });
+
+  it('sweeps the view model through a knife swing', () => {
+    const vm = new ViewModel(new PerspectiveCamera(CAMERA.fov, 16 / 9, CAMERA.near, CAMERA.far));
+    vm.setWeapon('knife');
+    const root = () => vm.scene.getObjectByName('view-model.root') as unknown as {
+      position: { x: number; y: number; z: number };
+      rotation: { x: number; y: number; z: number };
+    };
+    // `speedNorm: 1` kills the idle breathing so the pose is exactly the swing.
+    const at = (swing: number) => {
+      vm.update(pose({ swing, speedNorm: 1, drawTime: 0.0001 }));
+      return { ...root().position, yaw: root().rotation.y, roll: root().rotation.z };
+    };
+
+    // The first frames still carry slices of the raise animation: warm it out.
+    for (let i = 0; i < 4; i++) at(0);
+    const rest = at(0);
+    const start = at(1); // pulled back to the right, before the sweep
+    const mid = at(0.5); // blade crossing the middle, thrust forward
+    const late = at(0.2); // followed through to the left
+
+    expect(start.x).toBeGreaterThan(rest.x);
+    expect(start.yaw).toBeLessThan(rest.yaw);
+    expect(start.roll).toBeGreaterThan(rest.roll);
+
+    expect(mid.z).toBeLessThan(rest.z);
+    expect(mid.y).toBeLessThan(rest.y);
+
+    expect(late.x).toBeLessThan(rest.x);
+    expect(late.roll).toBeLessThan(rest.roll);
+
+    // At phase 0 the model is exactly back at rest: no leftover offset.
+    const done = at(0);
+    expect(done.x).toBeCloseTo(rest.x, 6);
+    expect(done.y).toBeCloseTo(rest.y, 6);
+    expect(done.z).toBeCloseTo(rest.z, 6);
+    expect(done.yaw).toBeCloseTo(rest.yaw, 6);
+    expect(done.roll).toBeCloseTo(rest.roll, 6);
     vm.dispose();
   });
 
@@ -604,5 +652,128 @@ describe('world signs', () => {
     expect(calloutLabel('BTunnels')).toBe('B TUNNELS');
     expect(calloutLabel('CTMid')).toBe('CT MID');
     expect(calloutLabel('')).toBe('');
+  });
+});
+
+describe('ground weapons', () => {
+  const gun = (id: number, kind: WeaponKind, x = 0, z = 0): GroundWeapon => ({
+    id,
+    weaponId: kind === 'rifle' ? 'ak47' : kind === 'pistol' ? 'usp' : 'nova',
+    kind,
+    ammo: 17,
+    reserve: 34,
+    pos: { x, y: 0, z },
+    droppedAt: 0,
+  });
+
+  it('draws one instance per gun and one draw call per kind on the floor', () => {
+    const scene = new Scene();
+    const layer = new GroundWeaponRenderer(scene);
+    expect(layer.drawn).toBe(0);
+    expect(layer.drawCalls).toBe(0);
+    expect(layer.kinds).toBe(0);
+    expect(scene.getObjectByName('render.ground-weapons')).toBeTruthy();
+
+    layer.sync([gun(1, 'rifle'), gun(2, 'rifle', 40, 20), gun(3, 'pistol', -30, 5)]);
+    expect(layer.drawn).toBe(3);
+    expect(layer.drawCalls).toBe(2);
+    expect(layer.kinds).toBe(2);
+
+    const rifles = scene.getObjectByName('render.ground-rifle') as InstancedMesh;
+    expect(rifles).toBeInstanceOf(InstancedMesh);
+    expect(rifles.count).toBe(2);
+    // Instanced and spread over the whole map: its own bounds would cull it.
+    expect(rifles.frustumCulled).toBe(false);
+    expect(rifles.matrixAutoUpdate).toBe(false);
+    expect((scene.getObjectByName('render.ground-pistol') as InstancedMesh).count).toBe(1);
+
+    // A gun lies at its own half thickness above the floor, and the drop id scatters
+    // the yaw so a pile of two is never perfectly parallel.
+    const a = new Matrix4();
+    const b = new Matrix4();
+    rifles.getMatrixAt(0, a);
+    rifles.getMatrixAt(1, b);
+    const pa = new Vector3().setFromMatrixPosition(a);
+    const pb = new Vector3().setFromMatrixPosition(b);
+    expect(pa.y).toBeCloseTo(GROUND_LIFT + GROUND_SHAPE.rifle.thick * 0.5, 6);
+    expect(pb.x).toBeCloseTo(40, 6);
+    expect(pb.z).toBeCloseTo(20, 6);
+    expect(Math.abs(a.elements[0] - b.elements[0])).toBeGreaterThan(0.01);
+
+    layer.dispose();
+  });
+
+  it('parks a kind that left the floor instead of paying a draw call for it', () => {
+    const scene = new Scene();
+    const layer = new GroundWeaponRenderer(scene);
+
+    layer.sync([gun(1, 'rifle'), gun(3, 'pistol')]);
+    expect(layer.drawCalls).toBe(2);
+
+    layer.sync([gun(1, 'rifle')]);
+    expect(layer.drawn).toBe(1);
+    expect(layer.drawCalls).toBe(1);
+    // The mesh is kept for the round; only its instance count is parked at zero.
+    expect(layer.kinds).toBe(2);
+    expect((scene.getObjectByName('render.ground-pistol') as InstancedMesh).count).toBe(0);
+
+    layer.clear();
+    expect(layer.drawn).toBe(0);
+    expect(layer.drawCalls).toBe(0);
+    expect((scene.getObjectByName('render.ground-rifle') as InstancedMesh).count).toBe(0);
+
+    layer.dispose();
+  });
+
+  it('caps one kind at its instanced capacity', () => {
+    const scene = new Scene();
+    const layer = new GroundWeaponRenderer(scene);
+    const many: GroundWeapon[] = [];
+    for (let i = 0; i < GROUND_SLOTS_PER_KIND + 5; i += 1) many.push(gun(i + 1, 'rifle', i * 3, 0));
+
+    layer.sync(many);
+
+    expect(layer.drawn).toBe(GROUND_SLOTS_PER_KIND);
+    expect((scene.getObjectByName('render.ground-rifle') as InstancedMesh).count).toBe(
+      GROUND_SLOTS_PER_KIND,
+    );
+    layer.dispose();
+  });
+
+  it('frees every mesh and geometry on dispose', () => {
+    const scene = new Scene();
+    const layer = new GroundWeaponRenderer(scene);
+    layer.sync([gun(1, 'rifle'), gun(2, 'grenade')]);
+    expect(layer.kinds).toBe(2);
+
+    layer.dispose();
+
+    expect(layer.kinds).toBe(0);
+    expect(layer.drawn).toBe(0);
+    expect(layer.group.children).toHaveLength(0);
+    expect(scene.getObjectByName('render.ground-rifle')).toBeUndefined();
+    // The group itself is the scene's problem; the layer only empties it.
+    expect(scene.getObjectByName('render.ground-weapons')).toBeTruthy();
+  });
+
+  it('builds one merged body per kind, sized from its table entry', () => {
+    const rifle = buildGroundWeaponGeometry('rifle');
+    rifle.computeBoundingBox();
+    const rbox = rifle.boundingBox!;
+    const span = (b: typeof rbox) => ({ x: b.max.x - b.min.x, y: b.max.y - b.min.y, z: b.max.z - b.min.z });
+    const r = span(rbox);
+
+    // Body plus a stock and a muzzle stub, so taller than the bare `length` but not
+    // twice it, and as wide as the table says.
+    expect(r.z).toBeGreaterThan(GROUND_SHAPE.rifle.length);
+    expect(r.z).toBeLessThan(GROUND_SHAPE.rifle.length * 1.5);
+    // As wide as the body, give or take the magazine bulging out of one side.
+    expect(r.x).toBeGreaterThanOrEqual(GROUND_SHAPE.rifle.wide);
+    expect(r.x).toBeLessThan(GROUND_SHAPE.rifle.wide * 1.2);
+    expect(rifle.getAttribute('position').count).toBeGreaterThan(0);
+
+    const knife = buildGroundWeaponGeometry('knife');
+    knife.computeBoundingBox();
+    expect(span(knife.boundingBox!).z).toBeLessThan(r.z * 0.5);
   });
 });

@@ -539,7 +539,10 @@ export class Player {
 
   private handleFire(cmd: InputCommand, now: number): void {
     const def = this.weapon;
-    if (def.slot === 'knife' || def.slot === 'c4') return;
+    // C4 is placed with `use`, never fired. The knife IS fired like any other
+    // weapon (it is a hitscan with ~96 u of reach and no magazine), so it must
+    // not be filtered out here: it used to be, which made slot 3 a dead key.
+    if (def.slot === 'c4') return;
     if (this.scopeTimer > 0) return; // mid scope transition: no firing
     const st = this.combat.getWeaponState(this.id, def.id, def);
     if (st.reloadTimer > 0) return;
@@ -562,6 +565,9 @@ export class Player {
     if (!fired) return;
     this.debug.shotsFired++;
     this.debug.lastFiredAt = now;
+    // Melee has no muzzle flash and a flat recoil pattern, so the swing itself is
+    // the feedback: the rig sweeps the view model and rolls the camera for ~0.3 s.
+    if (def.kind === 'knife') this.rig.startSwing();
 
     // View punch: the pattern entry for THIS shot is the offset of the view from
     // the true aim. It is deliberately NOT folded into `state.pitch`, so pulling

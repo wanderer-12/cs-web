@@ -96,13 +96,29 @@ export const CAMERA = {
   swaySmooth: 7.5,
   /** Max sway displacement in radians. */
   swayMax: 0.045,
-  /** Weapon bob amplitude (units) and frequency (Hz) at full speed. */
+  /**
+   * Weapon bob amplitude (units) and step rate at full speed.
+   *
+   * `bobFreq` is a STEP RATE in cycles per second, not an angular frequency:
+   * the rig advances `bobPhase` by `bobFreq * (0.55 + speedNorm)` cycles per
+   * second and only then multiplies by 2*PI. At 1.9 a full sprint bobs at
+   * ~2.95 Hz and a walk at ~2.0 Hz, which reads as footsteps. (It used to be
+   * 9.2, i.e. ~14 Hz: the view itself barely moved - the eye only takes 35% of
+   * `bobY` - but the view model 30-80 u from the eye amplified it into a
+   * visible shake.)
+   */
   bobAmount: 0.62,
-  bobFreq: 9.2,
+  bobFreq: 1.9,
+  /** Bob amplitude smoothing (approach rate, 1/s): ramps the bob in and out. */
+  bobSmooth: 14,
   /** Landing camera dip: units of vertical offset per (u/s) of landing speed. */
   landingDipPerSpeed: 0.0016,
   landingDipMax: 9,
   landingDipRecover: 9.5,
+  /** Melee (knife) swing length in seconds. */
+  meleeSwingTime: 0.3,
+  /** Camera roll (radians) at the middle of a melee swing. */
+  meleeSwingRoll: 0.05,
 } as const;
 
 export const COMBAT = {

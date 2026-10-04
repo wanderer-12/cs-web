@@ -22,7 +22,7 @@ import { EventBus } from '../src/core/events';
 import { Rng } from '../src/core/rng';
 import { World } from '../src/world/world';
 import { buildActorHitbox } from '../src/combat/hitbox';
-import { AK47, NOVA } from '../src/combat/weaponDefs';
+import { AK47, KNIFE, NOVA } from '../src/combat/weaponDefs';
 import { CombatSystem, type CombatActorRef } from '../src/combat/CombatSystem';
 import {
   MAX_INACCURACY,
@@ -1034,6 +1034,69 @@ describe('module surface', () => {
     expect(typeof whizzBy).toBe('function');
     expect(COMBAT.armorAbsorb).toBe(0.5);
     expect(COMBAT.penetrationDamageMul).toBe(0.6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// melee: the knife is a weapon, not a one-shot prop
+// ---------------------------------------------------------------------------
+
+describe('melee (knife)', () => {
+  function makeMelee() {
+    const world = makeWorld();
+    const bus = new EventBus();
+    const refs = new Map<number, CombatActorRef>();
+    const combat = new CombatSystem({
+      world,
+      bus,
+      getActor: (id) => refs.get(id),
+      rng: new Rng(0x2b17),
+    });
+    for (const id of [1, 2]) {
+      const ref: CombatActorRef = {
+        state: actor({ id, name: id === 1 ? 'Knifer' : 'Target', pos: { x: 0, y: 0, z: 0 } }),
+        weapon: id === 1 ? KNIFE : AK47,
+        ammo: new Map(),
+      };
+      refs.set(id, ref);
+      combat.registerActor(id, ref);
+    }
+    return { combat };
+  }
+
+  /** One fresh trigger press, exactly as `Player.handleFire` presents it. */
+  function swing(combat: CombatSystem, now: number): boolean {
+    const st = combat.getWeaponState(1, KNIFE.id, KNIFE);
+    st.triggerDown = true;
+    st.triggerPressed = false;
+    return combat.tryFire(
+      1,
+      KNIFE,
+      { dir: { x: 0, y: 0, z: -1 }, targets: [], rng: new Rng(1) },
+      now,
+    );
+  }
+
+  it('keeps swinging and never runs out of ammo', () => {
+    const { combat } = makeMelee();
+    const st = combat.getWeaponState(1, KNIFE.id, KNIFE);
+
+    // The knife is authored as a magazine of one, no reserve and no reload, so
+    // the generic "spend a round" path made it a single-use weapon: one swing
+    // per round, then dead. Melee must not consume ammo at all.
+    expect(KNIFE.magazine).toBe(1);
+    expect(KNIFE.reserve).toBe(0);
+    expect(KNIFE.reloadTime).toBe(0);
+
+    let now = 0;
+    for (let i = 0; i < 4; i++) {
+      now += 60 / KNIFE.rpm + 0.001;
+      expect(swing(combat, now), `swing ${i + 1}`).toBe(true);
+    }
+    expect(st.ammo).toBe(1);
+
+    // Still rate-limited by `rpm`: a second press inside the same period fails.
+    expect(swing(combat, now + 0.001)).toBe(false);
   });
 });
 

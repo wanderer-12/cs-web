@@ -27,6 +27,7 @@ import { CameraRig } from '../player/cameraRig';
 import { InputSystem } from '../player/input';
 import type { Player } from '../player/player';
 import { CharacterRenderer } from '../render/Characters';
+import { GroundWeaponRenderer } from '../render/GroundWeapons';
 import { ViewModel } from '../render/ViewModel';
 import { SignLayer } from '../render/Signs';
 import { Hud, createHud } from '../ui/Hud';
@@ -131,6 +132,8 @@ export class Engine {
   readonly viewModel: ViewModel;
   /** Floor labels / spawn placards: the world's own nametags (1 draw call). */
   readonly signs: SignLayer;
+  /** Guns lying on the floor after a drop or a death (1 draw call per kind). */
+  readonly groundWeapons: GroundWeaponRenderer;
   readonly loop: GameLoop;
   /** Rebuilt by `restart()`, hence not readonly. */
   match: Match;
@@ -224,6 +227,9 @@ export class Engine {
     // sharing one floor tint and 4 of 5 spawns facing a blank wall, so the world
     // now labels itself. One merged atlas mesh, no lighting, 1 draw call.
     this.signs = new SignLayer(this.scene, this.map);
+    // Guns on the floor: a dropped weapon is a world entity, so it needs a world
+    // mesh. Created per kind on first drop, one draw call each.
+    this.groundWeapons = new GroundWeaponRenderer(this.scene);
 
     this.audio = new AudioEngine((id) => weaponById(id));
     this.audio.attach(this.bus);
@@ -307,6 +313,7 @@ export class Engine {
     this.characters.dispose();
     this.viewModel.dispose();
     this.signs.dispose();
+    this.groundWeapons.dispose();
     this.sky.dispose();
     this.scene.remove(this.mapMeshes.group);
     this.renderer.dispose();
@@ -494,6 +501,8 @@ export class Engine {
     // the camera sits inside is the one the character layer hides.
     this.syncCharacters(view, frameDt);
     this.updateViewModel(view, frameDt);
+    // The floor is a world-space layer: it does not care where the camera looks.
+    this.groundWeapons.sync(this.match.groundWeapons);
 
     // Muzzle light rides the view direction; the VFX layer owns the envelope.
     this.camera.getWorldDirection(this.tmpCamDir);
@@ -578,6 +587,7 @@ export class Engine {
       punchPitch: pose.punchPitch,
       swayYaw: pose.swayYaw,
       swayPitch: pose.swayPitch,
+      swing: pose.swing,
       speedNorm: Math.min(1, Math.hypot(state.vel.x, state.vel.z) / MOVE.maxSpeed),
       alive: view === local && state.alive,
       scoped: !!weaponState?.scoped,
@@ -646,6 +656,16 @@ export class Engine {
 
     const defusing = match.defuserId === local.id && match.defuseProgress > 0;
 
+    // The gun lying within reach, if any: the HUD offers the swap key for it.
+    // A free slot needs no key (the match picks it up on its own), so the label
+    // only has to say which gun it is.
+    const reachable = dead ? null : match.nearestGroundWeapon(local);
+    const reachableDef = reachable ? weaponById(reachable.weaponId) : null;
+    const slotTaken = reachableDef ? local.weaponIdForSlot(reachableDef.slot) !== null : false;
+    const pickupHint = reachableDef
+      ? `${slotTaken ? 'Swap for' : 'Pick up'} ${reachableDef.name}`
+      : '';
+
     return {
       health: state.health,
       armor: state.armor,
@@ -669,6 +689,7 @@ export class Engine {
       bombSite: match.bombState === 'planted' ? match.bombSite : null,
       defusing,
       defuseProgress: defusing ? match.defuseProgress : 0,
+      pickupHint,
       crosshairGap: gap,
       crosshairLength: CROSSHAIR_LENGTH,
       crosshairThickness: CROSSHAIR_THICKNESS,

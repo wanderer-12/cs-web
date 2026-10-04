@@ -63,8 +63,8 @@ function Show-Banner {
 
 function Show-Controls {
   Write-Host ''
-  Write-Host '  操作: WASD 移动 | 左键 射击 | R 换弹 | E 埋/拆包 | B 买枪 | Tab 计分板' -ForegroundColor DarkGray
-  Write-Host '        Shift 静步 | C 下蹲 | Space 跳 | 1-5 换武器 | G 丢包 | F3 性能统计' -ForegroundColor DarkGray
+  Write-Host '  操作: WASD 移动 | 左键 射击 | R 换弹 | E 埋/拆包/换枪 | B 买枪 | Tab 计分板' -ForegroundColor DarkGray
+  Write-Host '        Shift 静步 | 左Alt 下蹲 | Space 跳 | 1-5 换武器 | G 丢枪 | F3 性能统计' -ForegroundColor DarkGray
 }
 
 # ============================================================================

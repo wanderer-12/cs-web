@@ -37,13 +37,30 @@ export const VIEW_SUN_INTENSITY = 1.15;
 export const VIEW_PUNCH_KICK = 1.35;
 export const VIEW_SWAY_FOLLOW = 0.8;
 export const VIEW_SWAY_ROLL = -0.5;
-/** Bob follow (the gun bounces slightly less than the camera). */
-export const VIEW_BOB_X = 0.85;
-export const VIEW_BOB_Y = 0.7;
+/**
+ * Bob follow: the gun swings WIDER than the camera bounce (±0.62 u at a full
+ * sprint) because the camera only takes 35% of it (`cameraRig` eye height), and
+ * because the step rate is now ~2-3 Hz (`CAMERA.bobFreq`) the extra travel
+ * reads as walking rather than the ~14 Hz vibration it used to be.
+ */
+export const VIEW_BOB_X = 1.2;
+export const VIEW_BOB_Y = 1.3;
 export const VIEW_DIP_FOLLOW = 0.6;
 /** Idle breathing, so a standing player's gun is not frozen. */
-export const VIEW_IDLE_AMPLITUDE = 0.12;
+export const VIEW_IDLE_AMPLITUDE = 0.18;
 export const VIEW_IDLE_RATE = 1.6;
+/**
+ * Knife swing, driven by `pose.swing` (1 = the hit just landed, 0 = idle). The
+ * blade sweeps across the view while thrusting forward and rolling through the
+ * arc: melee has no muzzle flash and a flat recoil pattern, so this is the only
+ * feedback a swing gets.
+ */
+export const VIEW_SWING_SWEEP = 1.25;
+export const VIEW_SWING_PULL = 0.6;
+export const VIEW_SWING_ACROSS = 10;
+export const VIEW_SWING_PUSH = 7;
+export const VIEW_SWING_DIP = 1.6;
+export const VIEW_SWING_ROLL = 0.55;
 /** Raise (weapon switch) and reload animation shapes. */
 export const VIEW_RAISE_DROP = 7;
 export const VIEW_RAISE_PITCH = 0.8;
@@ -240,6 +257,8 @@ export interface ViewModelPose {
   punchPitch: number;
   swayYaw: number;
   swayPitch: number;
+  /** Melee swing phase: 1 right after a knife hit, decaying to 0. */
+  swing: number;
   /** 0..1 horizontal speed, used to calm the idle breathing while running. */
   speedNorm: number;
   alive: boolean;
@@ -367,6 +386,19 @@ export class ViewModel {
     if (raise > 0) {
       this.root.position.y -= raise * VIEW_RAISE_DROP;
       this.root.rotation.x += raise * VIEW_RAISE_PITCH;
+    }
+
+    const swing = Math.max(0, Math.min(1, pose.swing));
+    if (swing > 0) {
+      // `phase` runs 0 -> 1 over the swing; `thrust` peaks at the halfway point,
+      // which is where the blade crosses the middle of the screen.
+      const phase = 1 - swing;
+      const thrust = Math.sin(phase * Math.PI);
+      this.root.position.x += (0.5 - phase) * VIEW_SWING_ACROSS;
+      this.root.position.y -= thrust * VIEW_SWING_DIP;
+      this.root.position.z -= thrust * VIEW_SWING_PUSH;
+      this.root.rotation.y += VIEW_SWING_SWEEP * phase - VIEW_SWING_PULL;
+      this.root.rotation.z += (1 - phase * 2) * VIEW_SWING_ROLL;
     }
 
     this.visible = !pose.scoped;

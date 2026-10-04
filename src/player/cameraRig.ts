@@ -28,6 +28,10 @@ export class CameraRig {
   dip = 0;
   /** Bob phase accumulator. */
   bobPhase = 0;
+  /** Smoothed bob amplitude (units): ramps the bob in and out instead of popping. */
+  bobAmountSmooth = 0;
+  /** Melee swing timer in seconds; restarted by `startSwing` on every knife hit. */
+  private swingTimer = 0;
   /** Extra vertical shake used by explosions. */
   shake = 0;
   /** Screen-shake rotational component. */
@@ -56,6 +60,8 @@ export class CameraRig {
     swayYaw: 0,
     swayPitch: 0,
     eye: 0,
+    /** Melee swing phase: 1 the instant a knife fires, decaying to 0. */
+    swing: 0,
   };
 
   private smoothedMouseDX = 0;
@@ -151,9 +157,22 @@ export class CameraRig {
       // the weapon at an odd offset.
       this.bobPhase += dt * 2.0;
     }
-    const bobAmount = CAMERA.bobAmount * speedNorm * (onGround ? 1 : 0.15);
+    const bobTarget = CAMERA.bobAmount * speedNorm * (onGround ? 1 : 0.15);
+    // Smooth the amplitude so starting/stopping and landing do not pop the
+    // weapon: the raw target jumps to full the instant `onGround` flips.
+    this.bobAmountSmooth += (bobTarget - this.bobAmountSmooth) * approach(CAMERA.bobSmooth, dt);
+    const bobAmount = this.bobAmountSmooth;
     const bobY = Math.sin(this.bobPhase * Math.PI * 2) * bobAmount;
     const bobX = Math.cos(this.bobPhase * Math.PI * 1) * bobAmount * 0.55;
+
+    // --- melee swing -------------------------------------------------------
+    // A knife swing is a view animation, not recoil: the knife's recoil pattern
+    // is flat, so without this a melee hit would have no feedback at all. The
+    // phase peaks mid-swing for the camera roll and decays to 0 on its own.
+    if (this.swingTimer > 0) this.swingTimer = Math.max(0, this.swingTimer - dt);
+    const swing = CAMERA.meleeSwingTime > 0 ? this.swingTimer / CAMERA.meleeSwingTime : 0;
+    const swingRoll =
+      swing > 0 ? -CAMERA.meleeSwingRoll * Math.sin((1 - swing) * Math.PI) : 0;
 
     // --- landing dip -------------------------------------------------------
     this.dip -= this.dip * approach(CAMERA.landingDipRecover, dt);
@@ -186,7 +205,7 @@ export class CameraRig {
     this.camera.rotation.set(
       clamp(aimPitch + this.punchPitch + this.swayPitch + this.shakePitch, -Math.PI / 2, Math.PI / 2),
       aimYaw + this.punchYaw + this.swayYaw + this.shakeYaw,
-      0,
+      swingRoll,
     );
 
     if (import.meta.env?.DEV) {
@@ -211,6 +230,12 @@ export class CameraRig {
     pose.swayYaw = this.swayYaw;
     pose.swayPitch = this.swayPitch;
     pose.eye = eye;
+    pose.swing = swing;
+  }
+
+  /** Start a melee (knife) swing: the view model sweeps and the camera rolls. */
+  startSwing(): void {
+    this.swingTimer = CAMERA.meleeSwingTime;
   }
 
   /** Trigger the landing dip from a landing speed (units/s). */

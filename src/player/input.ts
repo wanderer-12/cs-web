@@ -72,10 +72,13 @@ export const DEFAULT_BINDINGS: Record<ActionName, KeyBinding> = {
   left: { code: 'KeyA', alt: ['ArrowLeft'] },
   right: { code: 'KeyD', alt: ['ArrowRight'] },
   jump: { code: 'Space' },
-  // `C`, not `Ctrl`: in a browser `Ctrl+W` closes the tab, `Ctrl+D` bookmarks,
-  // `Ctrl+R` reloads and no page can veto any of them. Crouch-walking with Ctrl
-  // held means pressing those combinations constantly, so Ctrl is unbound.
-  crouch: { code: 'KeyC' },
+  // Left Alt (as requested), with `C` kept as the alternate. Ctrl is still
+  // unbound: in a browser `Ctrl+W` closes the tab, `Ctrl+D` bookmarks, `Ctrl+R`
+  // reloads and no page can veto any of them, while crouch-walking means holding
+  // the modifier down and hitting letter keys constantly. Alt has the same shape
+  // of hazard (`Alt+Tab` switches windows and no page can stop it), so `C` stays
+  // bound as the fallback that always works.
+  crouch: { code: 'AltLeft', alt: ['KeyC'] },
   walk: { code: 'ShiftLeft', alt: ['ShiftRight'] },
   attack: { code: 'Mouse0' },
   attack2: { code: 'Mouse2' },

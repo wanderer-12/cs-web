@@ -125,6 +125,21 @@ export const CSS = `
   background:linear-gradient(90deg,#38d9ff,#8affd1);
 }
 
+/* ===================== world interaction prompt ============================ */
+/* Just under the crosshair: it is about what the player is looking at, so it
+   must never be confused with the health/ammo band in the corners. */
+.hud-prompt{
+  position:absolute; left:50%; top:57%; transform:translateX(-50%);
+  display:flex; align-items:center; gap:.55em;
+  padding:.22em .8em; border-radius:.3em;
+  background:rgba(6,9,13,.55); border:1px solid rgba(255,255,255,.14);
+}
+.hud-prompt .key{
+  font-size:.78rem; font-weight:800; color:#0b0f14; background:#ffd08a;
+  border-radius:.22em; padding:.04em .45em;
+}
+.hud-prompt .lbl{ font-size:.84rem; letter-spacing:.1em; color:#e8eef7; }
+
 /* ===================== announcement banner ===================== */
 .hud-announce{
   position:absolute; left:50%; top:6.2em; transform:translateX(-50%);

@@ -222,3 +222,139 @@ describe('Match — headless integration', () => {
     expect(() => bus.emit('roundPhase', { phase: 'live', timeLeft: 10, roundNumber: 1 })).not.toThrow();
   });
 });
+
+/**
+ * Guns on the floor. Every interesting case here lives on an edge: `drop` and `use`
+ * arrive as held booleans, so the match has to synthesise the presses itself, and the
+ * gun you just threw down must not be snatched back by the empty slot that dropped it.
+ * `botsPerTeam: 0` still fields one player per side (`Math.max(1, ...)`), which keeps
+ * these tests down to two actors.
+ */
+describe('Match — weapons on the floor', () => {
+  it('drops the gun in hand on one G press and keeps the rounds in it', () => {
+    const { match, bus } = makeMatch({ skipWarmup: true, botsPerTeam: 0 });
+    const local = match.local;
+    local.giveWeapon('ak47', true);
+    match.combat.getWeaponState(local.id, 'ak47', local.weapon).ammo = 17;
+
+    const dropped: string[] = [];
+    bus.on('weaponDropped', (e) => dropped.push(e.weaponId));
+
+    // Held for four ticks on purpose: the drop must fire once, on the edge only.
+    run(match, TICK_DT * 4, (tick) => {
+      const cmd = idleCommand(tick);
+      cmd.buttons.drop = true;
+      return cmd;
+    });
+
+    expect(dropped).toEqual(['ak47']);
+    expect(local.weaponIdForSlot('primary')).toBeNull();
+    expect(match.groundWeapons).toHaveLength(1);
+    expect(match.groundWeapons[0].kind).toBe('rifle');
+    expect(match.groundWeapons[0].ammo).toBe(17);
+  });
+
+  it('leaves the primary and the secondary of a dead body on the floor', () => {
+    const { match } = makeMatch({ skipWarmup: true, botsPerTeam: 0 });
+    const local = match.local;
+    const victim = match.players.find((p) => p !== local)!;
+    const pistol = victim.weaponIdForSlot('secondary')!;
+    victim.giveWeapon('ak47', true);
+    match.combat.getWeaponState(victim.id, 'ak47', victim.weapon).ammo = 9;
+
+    // A real kill through the combat system, not a synthetic `death` event: the
+    // combat record is what marks the actor dead, so a bare event would leave the
+    // record alive and `CombatSystem.step` would resurrect the body next tick.
+    expect(match.combat.applyDirectDamage(victim.id, local.id, 500, 'chest')).toBe(true);
+    run(match, TICK_DT * 2);
+
+    // Counted once: the kill emits `death` itself and `Player.reportDeath` re-emits
+    // it, which the match's own `accounted` guard swallows.
+    expect(match.statsOf(victim.id).deaths).toBe(1);
+    expect(victim.state.alive).toBe(false);
+    // …and it stays dead: a body that stood back up would pick its own rifle off
+    // the floor a second later and the drop would be pointless.
+    run(match, 1);
+    expect(victim.state.alive).toBe(false);
+    expect(victim.weaponIdForSlot('primary')).toBeNull();
+    expect(victim.weaponIdForSlot('secondary')).toBeNull();
+    expect(match.groundWeapons.find((g) => g.weaponId === 'ak47')?.ammo).toBe(9);
+    expect(match.groundWeapons.some((g) => g.weaponId === pistol)).toBe(true);
+  });
+
+  it('refuses to re-grab its own fresh drop, then lifts it into a free slot', () => {
+    const { match } = makeMatch({ skipWarmup: true, botsPerTeam: 0 });
+    const local = match.local;
+    local.giveWeapon('ak47', true);
+    match.combat.getWeaponState(local.id, 'ak47', local.weapon).ammo = 12;
+
+    run(match, TICK_DT * 4, (tick) => {
+      const cmd = idleCommand(tick);
+      cmd.buttons.drop = tick === 0;
+      return cmd;
+    });
+    // Standing on your own gun with an empty primary: still not yours inside the
+    // settle window, otherwise `G` would look like it did nothing at all.
+    expect(local.weaponIdForSlot('primary')).toBeNull();
+    expect(match.groundWeapons).toHaveLength(1);
+
+    // Age the drop instead of simulating 1.5 s of bot fire.
+    match.groundWeapons[0].droppedAt = -1_000_000;
+    run(match, TICK_DT * 2);
+
+    expect(match.groundWeapons).toHaveLength(0);
+    expect(local.weaponIdForSlot('primary')).toBe('ak47');
+    expect(match.combat.getWeaponState(local.id, 'ak47', local.weapon).ammo).toBe(12);
+  });
+
+  it('swaps guns on E and drops the replaced one at the player’s feet', () => {
+    const { match, bus } = makeMatch({ skipWarmup: true, botsPerTeam: 0 });
+    const local = match.local;
+    const victim = match.players.find((p) => p !== local)!;
+    local.giveWeapon('ak47', true);
+    match.combat.getWeaponState(local.id, 'ak47', local.weapon).ammo = 21;
+
+    // An enemy dies on top of the player, leaving an m4a4 within reach.
+    victim.giveWeapon('m4a4', true);
+    match.combat.getWeaponState(victim.id, 'm4a4', victim.weapon).ammo = 6;
+    victim.state.pos.x = local.state.pos.x;
+    victim.state.pos.y = local.state.pos.y;
+    victim.state.pos.z = local.state.pos.z;
+    expect(match.combat.applyDirectDamage(victim.id, local.id, 500, 'chest')).toBe(true);
+    run(match, TICK_DT * 2);
+    // Primary is taken, so nothing is picked up without a key press.
+    expect(local.weaponIdForSlot('primary')).toBe('ak47');
+
+    const picked: string[] = [];
+    bus.on('weaponPickup', (e) => picked.push(e.weaponId));
+    run(match, TICK_DT * 4, (tick) => {
+      const cmd = idleCommand(tick);
+      cmd.buttons.use = tick < 2;
+      return cmd;
+    });
+
+    expect(picked).toEqual(['m4a4']);
+    expect(local.weaponIdForSlot('primary')).toBe('m4a4');
+    expect(match.combat.getWeaponState(local.id, 'm4a4', local.weapon).ammo).toBe(6);
+    expect(match.groundWeapons.find((g) => g.weaponId === 'ak47')?.ammo).toBe(21);
+  });
+
+  it('caps the floor so a round cannot turn into a warehouse', () => {
+    const { match } = makeMatch({ skipWarmup: true, botsPerTeam: 0 });
+    const local = match.local;
+
+    // 26 drops; the whole loop runs in well under the 1.5 s settle window, so none
+    // of them is picked back up by the player standing on the pile.
+    for (let i = 0; i < 26; i += 1) {
+      local.giveWeapon('ak47', true);
+      run(match, TICK_DT * 3, (tick) => {
+        const cmd = idleCommand(tick);
+        cmd.buttons.drop = tick === 0;
+        return cmd;
+      });
+    }
+
+    // GROUND_WEAPON_CAP in src/game/game.ts.
+    expect(match.groundWeapons).toHaveLength(24);
+  });
+});

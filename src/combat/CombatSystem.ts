@@ -298,13 +298,18 @@ export class CombatSystem {
       mode === 'auto' ? st.triggerDown : mode === 'burst' ? st.burstRemaining > 0 : st.triggerPressed;
     if (!canFire) return false;
 
-    if (st.ammo <= 0) return false;
+    // Melee has no magazine. `KNIFE` is authored as `magazine: 1, reserve: 0,
+    // reloadTime: 0`, so consuming a round would let it swing exactly once per
+    // round and it could never reload: the ammo gate would silently make the
+    // knife a single-use weapon. Swings are rate-limited by `rpm` instead.
+    const melee = def.kind === 'knife';
+    if (!melee && st.ammo <= 0) return false;
 
     // --- discharge ---------------------------------------------------------
     const rpm = Number.isFinite(def.rpm) && def.rpm > 0 ? def.rpm : 60;
     const period = 60 / rpm;
     st.nextFireTime = now + period;
-    st.ammo -= 1;
+    if (!melee) st.ammo -= 1;
     if (mode === 'burst') st.burstRemaining = Math.max(0, st.burstRemaining - 1);
 
     const shotIndex = st.shotIndex;

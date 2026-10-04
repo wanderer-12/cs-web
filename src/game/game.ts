@@ -28,11 +28,13 @@ import { Rng } from '../core/rng';
 import {
   EMPTY_BUTTONS,
   type ActorState,
+  type GroundWeapon,
   type InputCommand,
   type MapData,
   type RoundPhase,
   type Team,
   type Vec3,
+  type WeaponSlot,
 } from '../core/types';
 import { boxOverlapsWorld } from '../world/trace';
 import type { ActorHitbox, World } from '../world/world';
@@ -56,6 +58,18 @@ const BOMB_STILL_SPEED = 30;
 const WARMUP_RESPAWN_DELAY = 2;
 /** How far a gunshot can be heard by a bot (units). */
 const GUNSHOT_HEARING_RANGE = 3000;
+/** Range at which a weapon on the floor can be picked up (units). */
+const WEAPON_PICKUP_RANGE = 72;
+/** Slots that leave a gun behind when their owner dies, swaps or presses `G`. */
+const DROPPABLE_SLOTS: readonly WeaponSlot[] = ['primary', 'secondary'];
+/** Most guns the floor may hold at once; the oldest one is dropped out. */
+const GROUND_WEAPON_CAP = 24;
+/**
+ * Seconds a gun must lie undisturbed before anyone can pick it up. Without this
+ * `G` would look broken: the owner is still standing on the drop, so an empty
+ * slot would vacuum it straight back up on the next tick.
+ */
+const WEAPON_SETTLE_TIME = 1.5;
 
 /**
  * Two bodies closer than this (centre distance, on the same floor) push each
@@ -194,6 +208,21 @@ export class Match {
   /** CT currently defusing, or -1. */
   defuserId = -1;
   defuseProgress = 0;
+
+  // --- weapons on the floor -------------------------------------------------
+  /**
+   * Guns lying around after a death, a `G` drop or a swap.
+   *
+   * A gun is an entity of its own here, not a property of a slot: it carries the
+   * magazine it was dropped with, so a team-mate who picks it up inherits a
+   * half-spent AK-47 rather than a fresh one. The renderer reads this array; the
+   * match never keeps a second copy of it.
+   */
+  readonly groundWeapons: GroundWeapon[] = [];
+  private nextGroundWeaponId = 1;
+  /** Previous `use` / `drop` button state per actor, to detect fresh presses. */
+  private readonly useDown = new Map<number, boolean>();
+  private readonly dropDown = new Map<number, boolean>();
 
   // --- bookkeeping ---------------------------------------------------------
   private readonly money = new Map<number, number>();
@@ -479,6 +508,7 @@ export class Match {
       const cmd = player === this.local ? humanCmd : this.botCommandFor(player);
       player.canBuyNow = this.canBuy(player);
       player.step(cmd, dt, this.now, this.moneyOf(player.id));
+      this.updateWeaponsOnGround(player, cmd);
     }
 
     this.separatePlayers();
@@ -754,6 +784,10 @@ export class Match {
     this.bombTimer = 0;
     this.bombState = 'carried';
     this.accounted.clear();
+    // Every round starts on clean ground: the losers of the last round are
+    // re-pistolled here, and a field of 24 inherited rifles would quietly turn
+    // the buy menu into a suggestion.
+    this.groundWeapons.length = 0;
 
     const spawnsOf = (team: Team) => this.map.spawns.filter((s) => s.team === team);
     let slot = 0;
@@ -825,6 +859,7 @@ export class Match {
       // re-emits `death`, which the guard above swallows).
       victim?.reportDeath(death.killerId, death.weaponId, death.headshot, death.wallbang);
       if (victim?.hasBomb) this.dropBomb(victim.state.pos);
+      if (victim) this.dropAllWeapons(victim, victim.state.pos);
       if (victim && victim.id === this.defuserId) {
         this.defuserId = -1;
         this.defuseProgress = 0;
@@ -954,6 +989,145 @@ export class Match {
     if (money >= 2000 && tryBuy(smg) && tryBuy('kevlar')) return;
     if (money >= 1000 && tryBuy('kevlarhelmet')) return;
     if (money >= 700) tryBuy(player.team === 'T' ? 'deagle' : 'p250');
+  }
+
+  // ---------------------------------------------------------------------------
+  // weapons on the floor
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Put the gun in `slot` on the floor at `pos` and take it off its owner.
+   *
+   * The magazine travels with the gun: whoever picks it up next inherits the
+   * rounds that were in it. Combat keeps ammo per (actor, weapon) and that state
+   * survives a round, so the drop has to read it out here and the pickup has to
+   * write it back - otherwise the new owner gets whatever was in their own last
+   * copy of that weapon.
+   *
+   * @returns the entity that was created, or null when the slot was empty.
+   */
+  private dropWeapon(player: Player, slot: WeaponSlot, pos: Vec3): GroundWeapon | null {
+    const weaponId = player.weaponIdForSlot(slot);
+    if (!weaponId) return null;
+    const def = weaponById(weaponId);
+    if (!def) return null;
+
+    const st = this.combat.getWeaponState(player.id, def.id, def);
+    const dropped: GroundWeapon = {
+      id: this.nextGroundWeaponId,
+      weaponId: def.id,
+      kind: def.kind,
+      ammo: st.ammo,
+      reserve: st.reserve,
+      pos: { x: pos.x, y: pos.y, z: pos.z },
+      droppedAt: this.now,
+    };
+    this.nextGroundWeaponId += 1;
+    player.removeWeapon(def.id);
+    this.groundWeapons.push(dropped);
+    // The floor is not a warehouse: the oldest gun falls out of the world.
+    while (this.groundWeapons.length > GROUND_WEAPON_CAP) this.groundWeapons.shift();
+    this.bus.emit('weaponDropped', { actorId: player.id, weaponId: def.id, pos: dropped.pos });
+    return dropped;
+  }
+
+  /** Everything a body leaves behind: its primary and its secondary. */
+  private dropAllWeapons(player: Player, pos: Vec3): void {
+    for (const slot of DROPPABLE_SLOTS) this.dropWeapon(player, slot, pos);
+  }
+
+  /**
+   * Drop and pick up, driven by each player's own command once per tick.
+   *
+   *  - `G` (a fresh press) drops the gun in hand, or the primary when the knife
+   *    or a grenade is out.
+   *  - walking over a gun picks it up while its slot is empty. That is how the
+   *    bomb behaves here and how CS behaves: a free hand just grabs.
+   *  - `E` (a fresh press) swaps: the gun that was in the slot falls at the
+   *    player's feet carrying its own magazine.
+   *
+   * Nothing can be picked up for `WEAPON_SETTLE_TIME` after it lands, otherwise
+   * `G` would look broken - its owner is standing on the drop.
+   */
+  private updateWeaponsOnGround(player: Player, cmd: InputCommand): void {
+    const use = cmd.buttons.use;
+    const drop = cmd.buttons.drop;
+    const usePressed = use && !this.useDown.get(player.id);
+    const dropPressed = drop && !this.dropDown.get(player.id);
+    this.useDown.set(player.id, use);
+    this.dropDown.set(player.id, drop);
+
+    if (!player.state.alive) return;
+    if (this.phase === 'warmup' || this.phase === 'over') return;
+
+    if (dropPressed) {
+      const held = player.weapon.slot;
+      const slot: WeaponSlot = held === 'primary' || held === 'secondary' ? held : 'primary';
+      this.dropWeapon(player, slot, player.state.pos);
+    }
+
+    const gun = this.nearestGroundWeapon(player);
+    if (!gun) return;
+    // A gun that just landed is still in the air as far as the automatic grab is
+    // concerned, but a deliberate `E` may take it right away.
+    const settled = this.now - gun.droppedAt >= WEAPON_SETTLE_TIME;
+    if (!settled && !usePressed) return;
+    const def = weaponById(gun.weaponId);
+    if (!def) return;
+
+    const occupied = player.weaponIdForSlot(def.slot) !== null;
+    if (occupied && !usePressed) return;
+    if (occupied) this.dropWeapon(player, def.slot, player.state.pos);
+
+    player.giveWeapon(def.id);
+    const st = this.combat.getWeaponState(player.id, def.id, def);
+    st.ammo = gun.ammo;
+    st.reserve = gun.reserve;
+    st.reloadTimer = 0;
+    // Consume the press that grabbed the gun, so the trigger it was held down
+    // with cannot fire the first shot of an inherited magazine by surprise.
+    st.triggerPressed = true;
+    this.removeGroundWeapon(gun.id);
+    this.bus.emit('weaponPickup', { actorId: player.id, weaponId: def.id, swapped: occupied });
+  }
+
+  /**
+   * Closest gun on the floor within reach of `player`, or null.
+   *
+   * Distance is the main rule, but a body drops its primary and its secondary on
+   * the same spot, so a pile of two guns sits at exactly distance 0 from the player
+   * standing on it. Those ties are broken by usefulness: a gun that would fill an
+   * empty slot wins first (that is the one a walk-over grab will take), then one
+   * matching the slot in hand (so `E` swaps like for like), and finally the freshest
+   * drop — the one the player just watched land.
+   */
+  nearestGroundWeapon(player: Player): GroundWeapon | null {
+    const pos = player.state.pos;
+    const held = player.weapon.slot;
+    let best: GroundWeapon | null = null;
+    let bestDist = WEAPON_PICKUP_RANGE;
+    let bestRank = -1;
+    for (const gun of this.groundWeapons) {
+      const d = distanceXZ(gun.pos, pos);
+      if (d > bestDist) continue;
+      const def = weaponById(gun.weaponId);
+      if (!def) continue;
+      const rank = player.weaponIdForSlot(def.slot) === null ? 2 : def.slot === held ? 1 : 0;
+      const better =
+        best === null ||
+        d < bestDist ||
+        (d === bestDist && (rank > bestRank || (rank === bestRank && gun.droppedAt > best.droppedAt)));
+      if (!better) continue;
+      best = gun;
+      bestDist = d;
+      bestRank = rank;
+    }
+    return best;
+  }
+
+  private removeGroundWeapon(id: number): void {
+    const i = this.groundWeapons.findIndex((g) => g.id === id);
+    if (i >= 0) this.groundWeapons.splice(i, 1);
   }
 
   // ---------------------------------------------------------------------------

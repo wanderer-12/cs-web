@@ -157,6 +157,8 @@ export class Hud {
   private bombSiteEl!: HTMLDivElement;
   private defuseEl!: HTMLDivElement;
   private defuseFill!: HTMLDivElement;
+  private pickupEl!: HTMLDivElement;
+  private pickupLabelEl!: HTMLSpanElement;
   private announceEl!: HTMLDivElement;
   private feedEl!: HTMLDivElement;
   private crosshairEl!: HTMLDivElement;
@@ -299,6 +301,13 @@ export class Hud {
     dLbl.textContent = 'DEFUSING';
     const track = this.el('div', 'track', this.defuseEl);
     this.defuseFill = this.el('div', 'fill', track);
+
+    // World interaction prompt: the gun on the floor within reach. The key badge
+    // is static (E is the use key); only the label changes with the weapon.
+    this.pickupEl = this.el('div', 'hud-prompt hud-hidden', this.root);
+    const pKey = this.el('span', 'key mono', this.pickupEl);
+    pKey.textContent = 'E';
+    this.pickupLabelEl = this.el('span', 'lbl', this.pickupEl);
   }
 
   private buildAnnounce(): void {
@@ -834,6 +843,11 @@ export class Hud {
     this.defuseEl.classList.toggle('hud-hidden', !defusing);
     if (defusing) this.defuseFill.style.width = `${clamp(toFinite(s.defuseProgress, 0), 0, 1) * 100}%`;
 
+    // ---- guns on the floor ----------------------------------------------
+    const prompt = s.pickupHint;
+    this.pickupEl.classList.toggle('hud-hidden', !prompt);
+    if (prompt && this.pickupLabelEl.textContent !== prompt) this.pickupLabelEl.textContent = prompt;
+
     // ---- effects --------------------------------------------------------
     this.updateCrosshair();
     this.updateHitMarker();
@@ -1354,6 +1368,7 @@ function makeDefaultState(): HudFrameState {
     bombSite: null,
     defusing: false,
     defuseProgress: 0,
+    pickupHint: '',
     crosshairGap: 4,
     crosshairLength: 8,
     crosshairThickness: 2,
@@ -1375,13 +1390,13 @@ const CONTROLS: [string, string][] = [
   ['Left click', 'Fire'],
   ['Right click', 'Scope / special'],
   ['R', 'Reload'],
-  ['E', 'Use — plant / defuse'],
+  ['E', 'Use — plant / defuse / pick up a gun'],
   ['G', 'Drop weapon'],
   ['B', 'Buy menu'],
   ['TAB', 'Scoreboard'],
-  ['1 / 2 / 3 / 4 / 5', 'Switch weapon slot'],
+  ['1 / 2 / 3 / 4 / 5', 'Switch weapon slot — 3 is the knife'],
   ['SHIFT', 'Walk (slow, silent, accurate)'],
-  ['C', 'Crouch'],
+  ['ALT (left)', 'Crouch — C also works'],
   ['SPACE', 'Jump'],
   ['ESC', 'Pause menu'],
 ];
@@ -1391,6 +1406,7 @@ const HOW_TO_PLAY: string[] = [
   'Kills pay cash; save a round when you cannot afford a rifle.',
   'As Terrorist, carry the C4 to a bombsite and hold E to plant it.',
   'As Counter-Terrorist, hold E on the C4 to defuse — a kit halves the time.',
+  'Walk over a dropped gun with that slot free and you pick it up; E swaps.',
   'Standing still and crouching tightens the crosshair; running ruins accuracy.',
   'First team to 13 rounds wins the match (MR12).',
 ];

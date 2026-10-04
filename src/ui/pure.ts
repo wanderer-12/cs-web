@@ -48,6 +48,12 @@ export interface HudFrameState {
   bombSite: 'A' | 'B' | null;
   defusing: boolean;
   defuseProgress: number;
+  /**
+   * Prompt for the gun lying within reach of the player, or '' for none, e.g.
+   * 'Pick up AK-47' / 'Swap for AK-47'. The key that acts on it is the HUD's
+   * own `E` badge, so this carries the label only.
+   */
+  pickupHint: string;
   /** Crosshair gap in screen units — grows with weapon inaccuracy + movement. */
   crosshairGap: number;
   crosshairLength: number;
