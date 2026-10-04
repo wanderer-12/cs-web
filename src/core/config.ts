@@ -3,6 +3,8 @@
 // All movement values are in CS units (1 unit ~= 1.9 cm) and CS seconds.
 // =============================================================================
 
+import type { WeaponKind } from './types';
+
 export const TICK_RATE = 128;
 export const TICK_DT = 1 / TICK_RATE;
 /** Max simulation steps per rendered frame before we drop time (spiral guard). */
@@ -128,6 +130,17 @@ export const COMBAT = {
   armorDamageRatio: 0.5,
   /** Max range of any hitscan in units. */
   maxRange: 8192,
+  /**
+   * Hard range cap for melee (knife) in units — about 1.4 m, i.e. arm plus
+   * blade.
+   *
+   * The knife is a hitscan like every other weapon, so without this it traced
+   * out to `maxRange` (156 m) and a swing killed a player standing anywhere on
+   * the map: the reported "匕首无视攻击距离" bug. The knife's damage falloff
+   * cannot express this (its falloff is authored flat at 1.0), so the reach is
+   * enforced as a range cap instead — the same mechanism a bullet uses.
+   */
+  meleeRange: 72,
   /** Bullet penetration: base damage loss per penetration. */
   penetrationDamageMul: 0.6,
   /** Max wall thickness a bullet may pass (units). */
@@ -174,6 +187,195 @@ export const RULES = {
   /** Bots per team for the default single-player setup. */
   botsPerTeam: 4,
 } as const;
+
+// =============================================================================
+// Match modes
+// `RULES` above is the classic (MR12, bombs, economy) ruleset. A mode is the
+// full set of numbers one *kind* of match runs on, so `Match` reads its clock,
+// win target and round phases from the mode instead of the global block. The
+// classic entry mirrors RULES field for field, so switching to it cannot change
+// how the game plays today.
+// =============================================================================
+
+export type MatchModeId = 'classic' | 'duel';
+
+/** Headcount per side, as humans + bots. */
+export interface TeamComposition {
+  /** Humans on the human player's side, that player included. Always >= 1. */
+  ownHumans: number;
+  ownBots: number;
+  /** Humans on the far side: LAN peers, simulated by the host. */
+  enemyHumans: number;
+  enemyBots: number;
+}
+
+/** One weapon-restricted stage of a match; a duel runs three of them. */
+export interface PhaseRule {
+  /** Rounds the stage lasts (a final stage absorbs any leftover rounds). */
+  rounds: number;
+  /** Shown to the player, e.g. 手枪局. */
+  label: string;
+  /** Weapon kinds the buy menu may offer during the stage (`WEAPONS[id].kind`). */
+  buy: readonly WeaponKind[];
+  /**
+   * Free gun every player on that team starts each round of the stage with, on
+   * top of the pistol. `null` means the pistol is the whole loadout.
+   */
+  starter: { readonly T: string; readonly CT: string } | null;
+}
+
+export interface ModeRules {
+  id: MatchModeId;
+  label: string;
+  /** Map this mode is authored for. */
+  mapName: string;
+  /** Bomb/C4 rules on (classic) or off (duel, which is pure elimination). */
+  bomb: boolean;
+  roundsToWin: number;
+  maxRounds: number;
+  /** Swap sides at the halfway point: MR12 does, a duel does not. */
+  halfTimeSwap: boolean;
+  freezeTime: number;
+  roundTime: number;
+  /** Buy window, measured from the start of the round (freeze included). */
+  buyTime: number;
+  warmupTime: number;
+  roundEndDelay: number;
+  startMoney: number;
+  maxMoney: number;
+  /** Pistol every player respawns with; the classic team pistols. */
+  pistols: { readonly T: string; readonly CT: string };
+  /** Default headcount offline; a LAN session overrides it via MatchOptions. */
+  solo: TeamComposition;
+  phases: readonly PhaseRule[];
+}
+
+/** Every weapon kind the buy menu can stock. */
+const ALL_WEAPON_KINDS: readonly WeaponKind[] = [
+  'pistol',
+  'smg',
+  'rifle',
+  'shotgun',
+  'sniper',
+  'mg',
+];
+
+export const MODES: Record<MatchModeId, ModeRules> = {
+  classic: {
+    id: 'classic',
+    label: '经典模式',
+    mapName: 'de_dust2_lite',
+    bomb: true,
+    roundsToWin: RULES.roundsToWin,
+    maxRounds: RULES.maxRounds,
+    halfTimeSwap: true,
+    freezeTime: RULES.freezeTime,
+    roundTime: RULES.roundTime,
+    buyTime: RULES.buyTime,
+    warmupTime: RULES.warmupTime,
+    roundEndDelay: RULES.roundEndDelay,
+    startMoney: RULES.startMoney,
+    maxMoney: RULES.maxMoney,
+    pistols: { T: 'glock', CT: 'usp' },
+    solo: {
+      ownHumans: 1,
+      ownBots: RULES.botsPerTeam,
+      enemyHumans: 0,
+      // The human side is bots + 1, the far side is that many bots: today's 5v5.
+      enemyBots: RULES.botsPerTeam + 1,
+    },
+    phases: [
+      {
+        rounds: RULES.maxRounds,
+        label: '全枪械',
+        buy: ALL_WEAPON_KINDS,
+        starter: null,
+      },
+    ],
+  },
+
+  /**
+   * Duel: one small arena, no bomb, no economy friction, free guns that escalate
+   * per phase, and a first-to-17 race over exactly 8 + 15 + 10 rounds. Offline the
+   * lone human faces three bots; on a LAN each side is one human.
+   */
+  duel: {
+    id: 'duel',
+    label: '单挑模式',
+    mapName: 'aim_duel_lite',
+    bomb: false,
+    roundsToWin: 17,
+    maxRounds: 33,
+    halfTimeSwap: false,
+    freezeTime: 5,
+    roundTime: 90,
+    buyTime: 15,
+    warmupTime: 10,
+    roundEndDelay: 4,
+    // Money is never the limiter here; the phase whitelist is.
+    startMoney: 16000,
+    maxMoney: 16000,
+    pistols: { T: 'glock', CT: 'usp' },
+    solo: { ownHumans: 1, ownBots: 0, enemyHumans: 0, enemyBots: 3 },
+    phases: [
+      {
+        rounds: 8,
+        label: '手枪局',
+        buy: ['pistol'],
+        starter: null,
+      },
+      {
+        rounds: 15,
+        label: '步枪局',
+        buy: ['pistol', 'rifle'],
+        starter: { T: 'ak47', CT: 'm4a4' },
+      },
+      {
+        rounds: 10,
+        label: '狙击局',
+        buy: ['pistol', 'sniper'],
+        starter: { T: 'awp', CT: 'awp' },
+      },
+    ],
+  },
+};
+
+/** A LAN duel puts one human on each side instead of the bots. */
+export const LAN_DUEL_TEAMS: TeamComposition = {
+  ownHumans: 1,
+  ownBots: 0,
+  enemyHumans: 1,
+  enemyBots: 0,
+};
+
+/** Mode by id, defaulting to classic for anything unknown. */
+export function modeById(id: string | null | undefined): ModeRules {
+  return id === 'duel' ? MODES.duel : MODES.classic;
+}
+
+/** 0-based index of the phase a 1-based round number falls in. */
+export function phaseIndexForRound(mode: ModeRules, roundNumber: number): number {
+  let passed = 0;
+  for (let i = 0; i < mode.phases.length; i++) {
+    passed += mode.phases[i].rounds;
+    if (roundNumber <= passed) return i;
+  }
+  return mode.phases.length - 1;
+}
+
+/** Phase rule for a 1-based round number. */
+export function phaseForRound(mode: ModeRules, roundNumber: number): PhaseRule {
+  return mode.phases[phaseIndexForRound(mode, roundNumber)];
+}
+
+/** May this weapon kind be bought in this phase of this mode? */
+export function phaseAllowsKind(
+  mode: ModeRules,
+  roundNumber: number,
+  kind: WeaponKind,
+): boolean {
+  return phaseForRound(mode, roundNumber).buy.includes(kind);
+}
 
 export const MATCH = {
   playerName: 'PLAYER',

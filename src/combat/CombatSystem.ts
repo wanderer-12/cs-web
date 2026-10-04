@@ -1,5 +1,5 @@
 // =============================================================================
-// combat/CombatSystem.ts â€” the coordinator that turns input into bullets and
+// combat/CombatSystem.ts â€?the coordinator that turns input into bullets and
 // bullets into state changes.
 //
 // It owns, per actor:
@@ -25,7 +25,7 @@ import type { ActorHitbox, World } from '../world/world';
 import type { EventBus } from '../core/events';
 import { applyDamage, fireShot, whizzBy, type ShotResult } from './ballistics';
 import { aimOrigin } from './hitbox';
-import { PLAYER } from '../core/config';
+import { COMBAT, PLAYER } from '../core/config';
 
 /** Live weapon state for one actor. */
 export interface WeaponState {
@@ -100,7 +100,7 @@ const shotDirScratch: Vec3 = { x: 0, y: 0, z: -1 };
 /**
  * Module-scope ear position for the whizz-by test. A bullet's near miss is judged
  * against ONE listener (the human), not against every actor, so there is exactly
- * one scratch vector needed. NOT reentrant â€” same contract as `shotDirScratch`.
+ * one scratch vector needed. NOT reentrant â€?same contract as `shotDirScratch`.
  */
 const listenerEarScratch: Vec3 = { x: 0, y: 0, z: 0 };
 
@@ -170,7 +170,7 @@ export class CombatSystem {
    * `whizzBy` answers "did this bullet pass close to a listener", and there is only
    * ever one listener in a bot match: the human. That is a match-level fact, so the
    * game layer sets it once (`Match` passes its local player) and passes -1 to turn
-   * the cue off â€” which is what tests and headless runs effectively use, since a
+   * the cue off â€?which is what tests and headless runs effectively use, since a
    * whizz that nobody hears is just wasted events.
    */
   setListener(actorId: number): void {
@@ -180,7 +180,7 @@ export class CombatSystem {
   /**
    * The live weapon state for `weaponId`, created full if this is the first time
    * the actor has touched that weapon. Always returns the SAME object for the same
-   * (actor, weapon) pair â€” mutate it, do not copy it.
+   * (actor, weapon) pair â€?mutate it, do not copy it.
    */
   getWeaponState(id: number, weaponId: string, def: WeaponDef): WeaponState {
     const rec = this.actors.get(id);
@@ -203,7 +203,7 @@ export class CombatSystem {
     };
     map?.set(weaponId, created);
     // NOTE: when the actor is unknown (or its ref carries no ammo map) the state
-    // still exists for the caller but is not remembered â€” there is nowhere to
+    // still exists for the caller but is not remembered â€?there is nowhere to
     // store it. The engine always registers an actor before asking for state.
     return created;
   }
@@ -236,7 +236,7 @@ export class CombatSystem {
    *
    * The magazine is NOT refilled: only the transient firing state is cleared, and
    * `nextFireTime` is parked `def.drawTime` seconds in the future so the weapon
-   * cannot be fired before it is up â€” that delay is the whole reason switching
+   * cannot be fired before it is up â€?that delay is the whole reason switching
    * mid-fight is a real cost in CS. `now` comes from the injected clock, never
    * from `Date.now()`.
    */
@@ -327,6 +327,9 @@ export class CombatSystem {
       origin,
       dir: opts.dir,
       weapon: def,
+      // Melee has a reach, not a trajectory: a swing that traces out to the
+      // shared 8192 u hitscan limit is a swing that kills across the map.
+      maxRange: melee ? COMBAT.meleeRange : undefined,
       spread: {
         weapon: def,
         horizontalSpeed,
@@ -352,7 +355,7 @@ export class CombatSystem {
    *
    * Allocation-free in the steady state: the returned array is a module-scope
    * scratch buffer that is CLEARED at the start of each call (documented reused
-   * array â€” do not retain it across ticks or mutate it).
+   * array â€?do not retain it across ticks or mutate it).
    */
   step(dt: number, now: number): number[] {
     const completed = reloadCompletedScratch;

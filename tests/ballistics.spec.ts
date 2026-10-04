@@ -1098,6 +1098,70 @@ describe('melee (knife)', () => {
     // Still rate-limited by `rpm`: a second press inside the same period fails.
     expect(swing(combat, now + 0.001)).toBe(false);
   });
+
+  it('reaches only as far as an arm: the swing is capped at melee range', () => {
+    // The knife is a hitscan with a flat damage falloff, so before the cap it
+    // traced out to COMBAT.maxRange and one swing killed anyone on the map.
+    expect(COMBAT.meleeRange).toBeGreaterThan(0);
+    expect(COMBAT.meleeRange).toBeLessThan(COMBAT.maxRange / 10);
+
+    /**
+     * One knifer (id 1) facing a single target at `distance` units on -Z, set up
+     * exactly the way `Match` does it: the target's hitbox is registered with the
+     * world (that is what the trace tests against) and listed as a target.
+     */
+    function standoff(distance: number) {
+      const world = makeWorld();
+      const bus = new EventBus();
+      const refs = new Map<number, CombatActorRef>();
+      const combat = new CombatSystem({
+        world,
+        bus,
+        getActor: (id) => refs.get(id),
+        rng: new Rng(0x2b17),
+      });
+      const knifer = actor({ id: 1, name: 'Knifer', pos: { x: 0, y: 0, z: 0 } });
+      const target = actor({ id: 2, name: 'Target', pos: { x: 0, y: 0, z: -distance } });
+
+      refs.set(1, { state: knifer, weapon: KNIFE, ammo: new Map() });
+      combat.registerActor(1, refs.get(1)!);
+      refs.set(2, { state: target, weapon: AK47, ammo: new Map() });
+      combat.registerActor(2, refs.get(2)!);
+      world.registerActors([buildActorHitbox(target)]);
+
+      const hits: number[] = [];
+      bus.on('hit', (e: GameEventMap['hit']) => hits.push(e.damage));
+
+      const swing = (now: number): boolean => {
+        const st = combat.getWeaponState(1, KNIFE.id, KNIFE);
+        st.triggerDown = true;
+        st.triggerPressed = false;
+        return combat.tryFire(
+          1,
+          KNIFE,
+          {
+            origin: { x: 0, y: 55, z: 0 },
+            dir: { x: 0, y: 0, z: -1 },
+            targets: [buildActorHitbox(target)],
+            rng: new Rng(1),
+          },
+          now,
+        );
+      };
+      return { swing, hits };
+    }
+
+    // Inside the reach: a normal swing connects.
+    const near = standoff(40);
+    expect(near.swing(60 / KNIFE.rpm + 0.001)).toBe(true);
+    expect(near.hits).toHaveLength(1);
+    expect(near.hits[0]).toBeGreaterThan(0);
+
+    // Four times the reach: the swing still happens, it just cannot land.
+    const far = standoff(COMBAT.meleeRange * 4);
+    expect(far.swing(60 / KNIFE.rpm + 0.001)).toBe(true);
+    expect(far.hits).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

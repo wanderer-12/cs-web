@@ -3,7 +3,8 @@
 //
 // Owns everything a player cannot know about itself: who is on which team, who is
 // allowed to shoot whom, the round clock, the economy, the bomb, and the bot
-// brains. One instance is one 5v5 match against bots.
+// brains. One instance is one match; how many bodies a side fields and which
+// weapon stage a round belongs to come from the mode it was built with.
 //
 // Layering contract (do not invert it):
 //   World / NavGraph / EventBus  <- built by the engine and handed in
@@ -21,7 +22,19 @@ import { NavGraph } from '../ai/navigation';
 import { CombatSystem } from '../combat/CombatSystem';
 import { buildAllHitboxes } from '../combat/hitbox';
 import { EQUIPMENT_PRICE, weaponById } from '../combat/weaponDefs';
-import { COMBAT, MATCH, PLAYER, RULES } from '../core/config';
+import {
+  COMBAT,
+  MATCH,
+  PLAYER,
+  RULES,
+  modeById,
+  phaseForRound,
+  phaseIndexForRound,
+  type MatchModeId,
+  type ModeRules,
+  type PhaseRule,
+  type TeamComposition,
+} from '../core/config';
 import type { EventBus } from '../core/events';
 import { v3 } from '../core/math';
 import { Rng } from '../core/rng';
@@ -34,6 +47,7 @@ import {
   type RoundPhase,
   type Team,
   type Vec3,
+  type WeaponKind,
   type WeaponSlot,
 } from '../core/types';
 import { boxOverlapsWorld } from '../world/trace';
@@ -91,7 +105,14 @@ export type BuyableId = string;
 
 export interface BuyOutcome {
   ok: boolean;
-  reason?: 'money' | 'already-owned' | 'not-buy-time' | 'not-buy-zone' | 'dead' | 'unknown';
+  reason?:
+    | 'money'
+    | 'already-owned'
+    | 'not-buy-time'
+    | 'not-buy-zone'
+    | 'phase-locked'
+    | 'dead'
+    | 'unknown';
   price?: number;
 }
 
@@ -117,6 +138,20 @@ export interface MatchOptions {
   difficulty?: BotDifficulty;
   /** Bots per team, excluding the human. Default 4 (so both sides field five). */
   botsPerTeam?: number;
+  /** Ruleset to play. Defaults to classic: MR12, bombs, the full buy menu. */
+  mode?: MatchModeId;
+  /**
+   * Headcount per side. Omitted, the mode's own `solo` composition is used; a LAN
+   * session passes the peer's slot here instead of bots.
+   */
+  teams?: Partial<TeamComposition>;
+  /** Names for the peers on the far side, in slot order. */
+  remoteNames?: readonly string[];
+  /**
+   * Client mode: this match mirrors a host's authoritative one. Actor poses and
+   * the round clock arrive from the network instead of being simulated.
+   */
+  mirror?: boolean;
   /** Skip the warmup phase and go straight to round 1 (used by tests). */
   skipWarmup?: boolean;
   /**
@@ -178,6 +213,12 @@ export class Match {
   readonly rng: Rng;
   readonly combat: CombatSystem;
   readonly difficulty: BotDifficulty;
+  /** Ruleset this match runs on: classic (MR12 + bombs) or duel. */
+  readonly mode: ModeRules;
+  /** Stand-in for a host on a LAN client; see `MatchOptions.mirror`. */
+  readonly mirror: boolean;
+  /** Input commands pushed in for peers by the network, keyed by player id. */
+  private readonly remoteCommands = new Map<number, InputCommand>();
 
   readonly players: Player[] = [];
   readonly byId = new Map<number, Player>();
@@ -190,6 +231,8 @@ export class Match {
   /** Seconds left in the current phase (round clock, freeze, fuse, delay). */
   timeLeft: number = RULES.warmupTime;
   roundNumber = 0;
+  /** Index into `mode.phases` of the stage this round number falls in. */
+  phaseIndex = 0;
   scoreT = 0;
   scoreCT = 0;
   matchOver = false;
@@ -260,6 +303,8 @@ export class Match {
   /** Scratch for the body-vs-body separation pass; see `separatePlayers`. */
   private readonly pushProbe = v3();
   private readonly pushExtents = { ex: 0, ey: 0, ez: 0 };
+  /** Last phase index the players were told about, so a stage change is said once. */
+  private roundPhaseAnnounced = -1;
 
   constructor(options: MatchOptions) {
     this.bus = options.bus;
@@ -268,6 +313,10 @@ export class Match {
     this.rng = options.rng ?? new Rng(0x5eed117e);
     this.difficulty = options.difficulty ?? 'normal';
     this.humanTeam = options.humanTeam === 'T' ? 'T' : 'CT';
+    this.mode = modeById(options.mode);
+    this.mirror = options.mirror ?? false;
+    // The field initialiser stamped the classic warmup on the clock; the mode owns it.
+    this.timeLeft = this.mode.warmupTime;
 
     this.nav = new NavGraph(this.map);
     this.nav.attachWorld(this.world);
@@ -293,7 +342,16 @@ export class Match {
   // ---------------------------------------------------------------------------
 
   private createTeams(options: MatchOptions): Player {
-    const botsPerTeam = options.botsPerTeam ?? RULES.botsPerTeam;
+    const composition: TeamComposition = { ...this.mode.solo, ...options.teams };
+    // `botsPerTeam` is the older single-number knob (the launcher and the tests use
+    // it): it means "this many bots beside me, and one more so the far side fields
+    // a full team" — i.e. today's 5v5 when it is left at 4.
+    if (options.botsPerTeam !== undefined) {
+      const bots = Math.max(0, options.botsPerTeam);
+      composition.ownBots = bots;
+      composition.enemyBots = bots + 1;
+      composition.enemyHumans = 0;
+    }
     const spawnsOf = (team: Team) =>
       this.map.spawns.filter((s) => s.team === team).sort((a, b) => a.index - b.index);
     const tSpawns = spawnsOf('T');
@@ -303,14 +361,21 @@ export class Match {
     let nextId = 1;
     let human: Player | null = null;
 
-    const build = (team: Side, count: number, spawns: typeof tSpawns) => {
-      for (let i = 0; i < count; i++) {
+    // `humans` counts the human-controlled slots at the front of a side: the local
+    // player owns the first one on their own team, and every other human is a LAN
+    // peer whose commands arrive from the network.
+    const build = (team: Side, humans: number, bots: number, spawns: typeof tSpawns) => {
+      for (let i = 0; i < humans + bots; i++) {
         const spawn = spawns[i % Math.max(1, spawns.length)];
-        const isHuman = team === this.humanTeam && human === null;
+        const isHuman = i < humans;
+        const isLocal = isHuman && team === this.humanTeam && human === null;
+        const peerIndex = isHuman && !isLocal ? (team === this.humanTeam ? i - 1 : i) : -1;
         const id = nextId++;
-        const name = isHuman
+        const name = isLocal
           ? options.humanName ?? MATCH.playerName
-          : names[team][i % names[team].length];
+          : peerIndex >= 0
+            ? options.remoteNames?.[peerIndex] ?? `${MATCH.playerName} ${peerIndex + 1}`
+            : names[team][i % names[team].length];
         const player = new Player(
           {
             id,
@@ -323,26 +388,26 @@ export class Match {
           this.world,
           this.combat,
           this.bus,
-          isHuman ? options.rig : undefined,
+          isLocal ? options.rig : undefined,
         );
         if (spawn) player.state.yaw = spawn.yaw;
         this.register(player);
-        if (isHuman) human = player;
-        else this.spawnController(player);
+        if (isLocal) human = player;
+        else if (!isHuman) this.spawnController(player);
       }
     };
 
-    // The human's team fields the human plus `botsPerTeam` bots; the enemy team
-    // gets one more so both sides end up five strong.
-    const humanSideCount = Math.max(1, botsPerTeam + 1);
-    const enemyCount = Math.max(1, botsPerTeam + 1);
-    if (this.humanTeam === 'T') {
-      build('T', humanSideCount, tSpawns);
-      build('CT', enemyCount, ctSpawns);
-    } else {
-      build('CT', humanSideCount, ctSpawns);
-      build('T', enemyCount, tSpawns);
-    }
+    const ownHumans = Math.max(1, composition.ownHumans);
+    const ownBots = Math.max(0, composition.ownBots);
+    const farHumans = Math.max(0, composition.enemyHumans);
+    // The far side always fields at least one body: classic fills it with bots, a
+    // LAN duel with the peer. A match nobody can shoot back in is a bug, not a mode.
+    const farBots =
+      farHumans > 0 ? Math.max(0, composition.enemyBots) : Math.max(1, composition.enemyBots);
+    const ownSide: Side = this.humanTeam;
+    const farSide: Side = ownSide === 'T' ? 'CT' : 'T';
+    build(ownSide, ownHumans, ownBots, ownSide === 'T' ? tSpawns : ctSpawns);
+    build(farSide, farHumans, farBots, farSide === 'T' ? tSpawns : ctSpawns);
     if (!human) throw new Error('Match: failed to create the human player');
     return human;
   }
@@ -364,7 +429,7 @@ export class Match {
   private register(player: Player): void {
     this.players.push(player);
     this.byId.set(player.id, player);
-    this.money.set(player.id, RULES.startMoney);
+    this.money.set(player.id, this.mode.startMoney);
     this.stats.set(player.id, { kills: 0, deaths: 0, score: 0, plants: 0, defuses: 0 });
   }
 
@@ -459,8 +524,8 @@ export class Match {
     if (this.matchOver) return false;
     if (this.phase === 'warmup' || this.phase === 'freeze') return true;
     if (this.phase === 'live' || this.phase === 'bomb') {
-      const elapsed = RULES.roundTime - Math.max(0, this.timeLeft);
-      return elapsed <= Math.max(0, RULES.buyTime - RULES.freezeTime);
+      const elapsed = this.mode.roundTime - Math.max(0, this.timeLeft);
+      return elapsed <= Math.max(0, this.mode.buyTime - this.mode.freezeTime);
     }
     return false;
   }
@@ -505,7 +570,10 @@ export class Match {
     this.refreshHitboxes();
 
     for (const player of this.players) {
-      const cmd = player === this.local ? humanCmd : this.botCommandFor(player);
+      const cmd =
+        player === this.local
+          ? humanCmd
+          : (this.remoteCommands.get(player.id) ?? this.botCommandFor(player));
       player.canBuyNow = this.canBuy(player);
       player.step(cmd, dt, this.now, this.moneyOf(player.id));
       this.updateWeaponsOnGround(player, cmd);
@@ -515,6 +583,20 @@ export class Match {
     this.resolveDeaths();
     this.updateBomb(dt);
     this.checkRoundEnd();
+  }
+
+  /**
+   * Hand one tick of a LAN peer's input to the simulation. A remote human is
+   * stepped by exactly the code path a bot uses, so both machines agree about the
+   * world without either one owning it twice.
+   */
+  setRemoteCommand(playerId: number, cmd: InputCommand): void {
+    this.remoteCommands.set(playerId, { ...cmd, buttons: { ...cmd.buttons } });
+  }
+
+  /** Humans this machine does not drive: the LAN peers, in player order. */
+  get remoteHumans(): readonly Player[] {
+    return this.players.filter((p) => p !== this.local && !p.isBot);
   }
 
   /**
@@ -682,6 +764,16 @@ export class Match {
 
   /** What the team is trying to do this tick, for the bot brains. */
   private updateTeamObjective(team: Team): void {
+    // A duel has no sites and no bomb: the objective IS the enemy, so the squad
+    // walks at the nearest living opponent instead of parking on a goal node the
+    // map cannot provide.
+    if (!this.mode.bomb) {
+      const enemy = this.players.find((p) => p.team !== team && p.state.alive) ?? null;
+      this.objective.kind = 'hunt';
+      this.objective.site = null;
+      this.objective.goalNode = enemy ? this.nav.nearestNode(enemy.state.pos) : -1;
+      return;
+    }
     const planted = this.bombState === 'planted';
     if (team === 'T') {
       if (planted) {
@@ -743,7 +835,7 @@ export class Match {
         this.timeLeft -= dt;
         if (this.timeLeft <= 0) {
           this.phase = 'live';
-          this.timeLeft = RULES.roundTime;
+          this.timeLeft = this.mode.roundTime;
           this.bus.emit('roundPhase', {
             phase: 'live',
             timeLeft: this.timeLeft,
@@ -769,11 +861,17 @@ export class Match {
   /** Reset everyone, hand out the bomb, let the bots shop, and freeze. */
   private beginRound(roundNumber: number): void {
     this.roundNumber = roundNumber;
-    // MR12: the sides switch after round 12.
-    if (roundNumber > 1 && roundNumber - 1 === RULES.maxRounds / 2) this.swapSides();
+    // MR12 switches sides at half time; a duel plays all three stages on one side.
+    if (this.mode.halfTimeSwap && roundNumber > 1 && roundNumber - 1 === this.mode.maxRounds / 2) {
+      this.swapSides();
+    }
+    const phase = phaseForRound(this.mode, roundNumber);
+    this.phaseIndex = phaseIndexForRound(this.mode, roundNumber);
+    const phaseChanged = this.phaseIndex !== this.roundPhaseAnnounced;
+    this.roundPhaseAnnounced = this.phaseIndex;
 
     this.phase = 'freeze';
-    this.timeLeft = RULES.freezeTime;
+    this.timeLeft = this.mode.freezeTime;
     this.roundEndTimer = 0;
     this.targetSite = this.rng.bool(0.5) ? 'A' : 'B';
     this.siteIndex = this.rng.int(0, 8);
@@ -798,12 +896,18 @@ export class Match {
       // per-round purchase here, and bots rebuy it, so the economy still bites.
       player.respawn(spawn ? spawn.pos : { x: 0, y: 64, z: 0 }, 100, 0, false);
       if (spawn) player.state.yaw = spawn.yaw;
-      player.resetRoundLoadout(player.team === 'T' ? 'glock' : 'usp');
+      const side: Side = player.team === 'T' ? 'T' : 'CT';
+      player.resetRoundLoadout(this.mode.pistols[side]);
+      // A duel hands out the stage's gun for free, so the phase reads as a weapon
+      // rule rather than a shopping decision.
+      const starter = phase.starter?.[side];
+      if (starter) player.giveWeapon(starter, true);
       player.refillAllAmmo();
       this.bus.emit('spawn', { actorId: player.id, team: player.team });
     }
 
-    const ts = this.aliveOf('T');
+    // A mode without bombs skips the C4 entirely: its rounds are pure elimination.
+    const ts = this.mode.bomb ? this.aliveOf('T') : [];
     if (ts.length > 0) {
       const carrier = this.rng.pick(ts);
       carrier.giveWeapon('c4');
@@ -813,9 +917,16 @@ export class Match {
     for (const player of this.players) {
       if (!player.isBot) continue;
       this.controllers.get(player.id)?.resetForRound();
-      this.botBuy(player);
+      // Duel bots live on the stage's free gun; there is no economy to shop with.
+      if (this.mode.bomb) this.botBuy(player);
     }
     this.refreshHitboxes();
+    if (phaseChanged && this.mode.phases.length > 1) {
+      this.bus.emit('announce', {
+        text: `${phase.label} — 第 ${this.roundNumber} 回合`,
+        kind: 'round',
+      });
+    }
     this.bus.emit('roundPhase', { phase: 'freeze', timeLeft: this.timeLeft, roundNumber });
   }
 
@@ -879,7 +990,7 @@ export class Match {
   }
 
   addMoney(id: number, amount: number): void {
-    const next = Math.max(0, Math.min(RULES.maxMoney, this.moneyOf(id) + amount));
+    const next = Math.max(0, Math.min(this.mode.maxMoney, this.moneyOf(id) + amount));
     this.money.set(id, next);
   }
 
@@ -914,6 +1025,21 @@ export class Match {
     return this.isInsideBuyZone(player.state.pos, player.team);
   }
 
+  /** The weapon stage the current round belongs to (round 1 during warmup). */
+  get phaseRule(): PhaseRule {
+    return phaseForRound(this.mode, Math.max(1, this.roundNumber));
+  }
+
+  /** Weapon kinds the buy menu may offer right now. */
+  allowedBuyKinds(): readonly WeaponKind[] {
+    return this.phaseRule.buy;
+  }
+
+  /** Does the current stage allow buying this weapon kind? */
+  phaseAllowsBuy(kind: WeaponKind): boolean {
+    return this.phaseRule.buy.includes(kind);
+  }
+
   /** Buy a weapon or equipment item. The result tells the UI which sound to play. */
   buy(id: number, itemId: BuyableId): BuyOutcome {
     const player = this.byId.get(id);
@@ -922,6 +1048,8 @@ export class Match {
     if (!this.buyWindowOpen) return { ok: false, reason: 'not-buy-time' };
     if (!this.isInsideBuyZone(player.state.pos, player.team)) return { ok: false, reason: 'not-buy-zone' };
 
+    if (!this.mode.bomb && itemId === 'defusekit') return { ok: false, reason: 'phase-locked' };
+
     const equipmentPrice = EQUIPMENT_PRICE[itemId];
     if (equipmentPrice !== undefined) {
       return this.buyEquipment(player, itemId as EquipmentId, equipmentPrice);
@@ -929,6 +1057,9 @@ export class Match {
 
     const def = weaponById(itemId);
     if (!def) return { ok: false, reason: 'unknown' };
+    // The stage owns what may be bought: pistols in a pistol round, rifles in a
+    // rifle round, and the sniper last. Everything else is refused as phase-locked.
+    if (!this.phaseAllowsBuy(def.kind)) return { ok: false, reason: 'phase-locked' };
     const price = def.price;
     if (this.moneyOf(id) < price) return { ok: false, reason: 'money' };
     if (def.slot !== 'grenade' && player.weaponIdForSlot(def.slot) === def.id) {
@@ -1269,13 +1400,29 @@ export class Match {
       this.endRound('CT', planted ? 'defused' : 'elimination');
       return;
     }
-    if (!planted && this.timeLeft <= 0) this.endRound('CT', 'time');
+    if (!planted && this.timeLeft <= 0) {
+      this.endRound(this.mode.bomb ? 'CT' : this.timeoutWinner(), 'time');
+    }
+  }
+
+  /**
+   * Who takes a bomb-less round that ran out of clock: more bodies standing, then
+   * more health pooled over the side. Nobody standing cannot reach here (that ends
+   * the round first), so the tie-break is arithmetic rather than a rule.
+   */
+  private timeoutWinner(): Team {
+    const t = this.aliveOf('T');
+    const ct = this.aliveOf('CT');
+    if (t.length !== ct.length) return t.length > ct.length ? 'T' : 'CT';
+    const health = (list: readonly Player[]) =>
+      list.reduce((sum, p) => sum + Math.max(0, p.state.health), 0);
+    return health(t) >= health(ct) ? 'T' : 'CT';
   }
 
   private endRound(winner: Team, reason: string): void {
     if (this.phase === 'over') return;
     this.phase = 'over';
-    this.roundEndTimer = RULES.roundEndDelay;
+    this.roundEndTimer = this.mode.roundEndDelay;
     this.defuserId = -1;
     this.defuseProgress = 0;
     this.rewardTeams(winner, reason);
@@ -1286,9 +1433,15 @@ export class Match {
     this.bus.emit('roundEnd', { winner, reason, scoreT: this.scoreT, scoreCT: this.scoreCT });
     this.bus.emit('announce', { text: `${winner} win — ${describeReason(reason)}`, kind: 'round' });
 
-    if (this.scoreT >= RULES.roundsToWin || this.scoreCT >= RULES.roundsToWin) {
+    const decided =
+      this.scoreT >= this.mode.roundsToWin ||
+      this.scoreCT >= this.mode.roundsToWin ||
+      this.roundNumber >= this.mode.maxRounds;
+    if (decided) {
       this.matchOver = true;
-      this.winner = this.scoreT > this.scoreCT ? 'T' : 'CT';
+      // A duel is first to 17 over 33 rounds, so the last round always decides it;
+      // the equal branch keeps a mode that ends level from inventing a winner.
+      this.winner = this.scoreT === this.scoreCT ? null : this.scoreT > this.scoreCT ? 'T' : 'CT';
     }
   }
 
