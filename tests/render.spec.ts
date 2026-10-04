@@ -12,7 +12,7 @@
 // =============================================================================
 
 import { describe, expect, it } from 'vitest';
-import { Color, InstancedMesh, Matrix4, Scene, PerspectiveCamera, type BufferGeometry } from 'three';
+import { Color, InstancedMesh, Matrix4, Scene, PerspectiveCamera, Vector3, type BufferGeometry, type Mesh } from 'three';
 import { HEAD_HALF_WIDTH, HITBOX_BANDS } from '../src/combat/hitbox';
 import { CAMERA, PLAYER } from '../src/core/config';
 import type { ActorState, Team, WeaponKind } from '../src/core/types';
@@ -325,6 +325,58 @@ describe('ViewModel', () => {
     vm.update(pose({ reloading: true, reloadTime: 1, dt: 0.5, drawTime: 0.0001 }));
     expect(root().position.y).toBeLessThan(0);
     expect(root().rotation.z).not.toBe(0);
+    vm.dispose();
+  });
+
+  it('draws the weapon in camera space, not in map coordinates', () => {
+    // The models are authored around x ≈ +7 (right), y ≈ -6 (down), z ≈ -14
+    // (forward). Rendering that scene with the world camera would drop the gun
+    // back into map coordinates near the origin, where the player can never see
+    // it — which is exactly what happened before this test existed.
+    const world = new PerspectiveCamera(CAMERA.fov, 16 / 9, CAMERA.near, CAMERA.far);
+    world.position.set(1200, 68, -2400);
+    world.rotation.set(0, Math.PI / 3, 0);
+    world.updateMatrixWorld(true);
+
+    const vm = new ViewModel(world);
+    const cam = vm.renderCamera;
+    expect(cam).not.toBe(world);
+    expect(cam.position.length()).toBe(0);
+    expect(cam.fov).toBe(world.fov);
+    expect(cam.aspect).toBe(world.aspect);
+    expect(cam.near).toBe(world.near);
+    expect(cam.far).toBe(world.far);
+
+    // A zoom (scope fov, resize) must still reach the view pass.
+    world.fov = 40;
+    world.aspect = 4 / 3;
+    world.updateProjectionMatrix();
+    expect(vm.renderCamera.fov).toBe(40);
+    expect(vm.renderCamera.aspect).toBeCloseTo(4 / 3, 6);
+
+    vm.setWeapon('rifle');
+    vm.update(pose({ drawTime: 0.0001 }));
+    expect(vm.visible).toBe(true);
+
+    let mesh: Mesh | null = null;
+    vm.scene.traverse((object) => {
+      const candidate = object as Mesh;
+      if (!mesh && candidate.isMesh) mesh = candidate;
+    });
+    expect(mesh).not.toBeNull();
+    const geometry = (mesh as unknown as Mesh).geometry;
+    geometry.computeBoundingBox();
+    const box = geometry.boundingBox;
+    expect(box).not.toBeNull();
+    const center = box?.getCenter(new Vector3()) ?? new Vector3();
+    // In camera space the gun is a few units right/down and well in front.
+    expect(center.z).toBeLessThan(-CAMERA.near);
+    expect(Math.abs(center.x)).toBeLessThan(20);
+    // And it really lands on screen with this camera.
+    const ndc = center.clone().project(cam);
+    expect(Math.abs(ndc.x)).toBeLessThan(1);
+    expect(Math.abs(ndc.y)).toBeLessThan(1);
+    expect(ndc.z).toBeLessThan(1);
     vm.dispose();
   });
 

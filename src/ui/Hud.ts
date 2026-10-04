@@ -1381,7 +1381,7 @@ const CONTROLS: [string, string][] = [
   ['TAB', 'Scoreboard'],
   ['1 / 2 / 3 / 4 / 5', 'Switch weapon slot'],
   ['SHIFT', 'Walk (slow, silent, accurate)'],
-  ['CTRL', 'Crouch'],
+  ['C', 'Crouch'],
   ['SPACE', 'Jump'],
   ['ESC', 'Pause menu'],
 ];

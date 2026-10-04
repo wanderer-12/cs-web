@@ -20,13 +20,62 @@ interface KeyBinding {
   alt?: string[];
 }
 
+/**
+ * Keys the browser would otherwise act on while the game owns the keyboard:
+ * `Tab` walks the focus ring (and then `Space` "clicks" whatever it landed on),
+ * `Space` / arrows scroll, F1 opens help, `/` and `'` open quick-find (Firefox).
+ *
+ * `F5`, `F11` and `F12` are deliberately absent: they are reserved by the
+ * browser and `preventDefault()` cannot stop them. Ctrl combinations are absent
+ * for the same reason — which is why no action is bound to Ctrl any more
+ * (`Ctrl+W` closes the tab and no page can veto it).
+ */
+export const BROWSER_HOGGED_KEYS: readonly string[] = [
+  'Tab',
+  'Space',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'Slash',
+  'Quote',
+  'Backquote',
+  'F1',
+  'F2',
+  'F3',
+  'F4',
+  'F6',
+  'F7',
+  'F8',
+  'F9',
+  'F10',
+];
+
+const HOGGED = new Set(BROWSER_HOGGED_KEYS);
+
+/** True for `<input>`, `<textarea>`, `<select>` and contenteditable targets. */
+export function isTextTarget(target: EventTarget | null): boolean {
+  const element = target as (HTMLElement & { tagName?: string }) | null;
+  if (!element) return false;
+  const tag = element.tagName;
+  return (
+    tag === 'INPUT' ||
+    tag === 'TEXTAREA' ||
+    tag === 'SELECT' ||
+    element.isContentEditable === true
+  );
+}
+
 export const DEFAULT_BINDINGS: Record<ActionName, KeyBinding> = {
   forward: { code: 'KeyW', alt: ['ArrowUp'] },
   back: { code: 'KeyS', alt: ['ArrowDown'] },
   left: { code: 'KeyA', alt: ['ArrowLeft'] },
   right: { code: 'KeyD', alt: ['ArrowRight'] },
   jump: { code: 'Space' },
-  crouch: { code: 'ControlLeft', alt: ['ControlRight', 'KeyC'] },
+  // `C`, not `Ctrl`: in a browser `Ctrl+W` closes the tab, `Ctrl+D` bookmarks,
+  // `Ctrl+R` reloads and no page can veto any of them. Crouch-walking with Ctrl
+  // held means pressing those combinations constantly, so Ctrl is unbound.
+  crouch: { code: 'KeyC' },
   walk: { code: 'ShiftLeft', alt: ['ShiftRight'] },
   attack: { code: 'Mouse0' },
   attack2: { code: 'Mouse2' },
@@ -133,13 +182,13 @@ export class InputSystem {
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.repeat) {
-        if (!this.onKeyDown?.(e.code, e)) return;
-        return;
-      }
+      const consumed = this.onKeyDown?.(e.code, e) === true;
+      // The game owns the keyboard: swallow the browser's own handling for every
+      // key we listen to (and for the keys it would act on otherwise), including
+      // auto-repeat — a held Space must not start scrolling the page.
+      if (consumed || this.ownsKey(e)) e.preventDefault();
+      if (e.repeat) return;
       this.held.add(e.code);
-      const consumed = this.onKeyDown?.(e.code, e);
-      if (consumed) e.preventDefault();
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
@@ -223,6 +272,25 @@ export class InputSystem {
 
   isHeldCode(code: string): boolean {
     return this.held.has(code);
+  }
+
+  /** True when `code` is bound to any action (primary or alternate). */
+  isBound(code: string): boolean {
+    for (const binding of Object.values(this.bindings)) {
+      if (binding.code === code) return true;
+      if (binding.alt?.includes(code)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * True when this keyboard event belongs to the game, so the browser's default
+   * handling must be suppressed. Events aimed at a text field are never claimed,
+   * so typing a player name still works.
+   */
+  private ownsKey(e: KeyboardEvent): boolean {
+    if (isTextTarget(e.target)) return false;
+    return HOGGED.has(e.code) || this.isBound(e.code);
   }
 
   private clearButtons(): void {

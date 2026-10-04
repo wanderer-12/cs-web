@@ -264,6 +264,15 @@ export class ViewModel {
   private readonly root = new THREE.Group();
   private readonly models = new Map<WeaponKind, WeaponModel>();
   private readonly camera: THREE.PerspectiveCamera;
+  /**
+   * The view-model scene is authored in *camera space* (x ≈ +7 right, y ≈ -6 down,
+   * z ≈ -14 forward), so it must be drawn with a camera parked at the origin —
+   * NOT the world camera. Rendering it with the world camera puts the gun back in
+   * map coordinates near (0,0,0), thousands of units away from the player, where
+   * it is invisible. Only the projection is shared.
+   */
+  private readonly viewCamera: THREE.PerspectiveCamera;
+  private readonly projection = { fov: 0, aspect: 0, near: 0, far: 0 };
   private kind: WeaponKind | null = null;
   private muzzle: MuzzleOffset = KNIFE_MUZZLE;
   private raiseT = 1;
@@ -273,6 +282,12 @@ export class ViewModel {
 
   constructor(camera: THREE.PerspectiveCamera) {
     this.camera = camera;
+    this.viewCamera = camera.clone();
+    this.viewCamera.name = 'view-model.camera';
+    this.viewCamera.position.set(0, 0, 0);
+    this.viewCamera.rotation.set(0, 0, 0);
+    this.viewCamera.scale.set(1, 1, 1);
+    this.viewCamera.updateMatrixWorld(true);
     this.scene.name = 'view-model';
     this.root.name = 'view-model.root';
     this.scene.add(this.root);
@@ -357,9 +372,30 @@ export class ViewModel {
     this.visible = !pose.scoped;
   }
 
-  /** The camera this pass must be rendered with (same object as the world's). */
+  /**
+   * The camera this pass must be rendered with: at the origin, sharing only the
+   * world camera's projection (so a scoped/zoomed fov or a resize stays in step).
+   */
   get renderCamera(): THREE.PerspectiveCamera {
-    return this.camera;
+    const src = this.camera;
+    const cam = this.viewCamera;
+    if (
+      this.projection.fov !== src.fov ||
+      this.projection.aspect !== src.aspect ||
+      this.projection.near !== src.near ||
+      this.projection.far !== src.far
+    ) {
+      this.projection.fov = src.fov;
+      this.projection.aspect = src.aspect;
+      this.projection.near = src.near;
+      this.projection.far = src.far;
+      cam.fov = src.fov;
+      cam.aspect = src.aspect;
+      cam.near = src.near;
+      cam.far = src.far;
+      cam.updateProjectionMatrix();
+    }
+    return cam;
   }
 
   private model(kind: WeaponKind): WeaponModel {
