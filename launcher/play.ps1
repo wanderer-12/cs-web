@@ -489,7 +489,7 @@ function Show-Menu($s) {
   Write-Host '   1) 开发模式      热更新，改代码即时生效，端口 5174     [推荐]' -ForegroundColor White
   Write-Host '   2) 生产模式      先构建再启动，首屏加载最快，端口 4173'
   Write-Host '   3) 只构建        tsc + vite build 产出 dist/'
-  Write-Host '   4) 跑测试        14 个规格 / 418 条'
+  Write-Host '   4) 跑测试        22 个规格 / 538 条'
   Write-Host '   5) 启动参数      难度 / 队伍 / 种子 / 名字 / 统计'
   Write-Host '   6) 重装依赖      pnpm install'
   Write-Host '   0) 退出'
