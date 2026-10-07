@@ -545,7 +545,8 @@ export class Player {
   }
 
   /**
-   * Drop out of the scope right now (used after a scoped shot and on death).
+   * Drop out of the scope right now (called after a scoped shot; dying and
+   * respawning is handled by the reset path above, which also clears the level).
    * The render layers read the scope from the weapon state, so this must go
    * through `publishScoped`.
    */
