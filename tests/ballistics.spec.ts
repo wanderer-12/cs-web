@@ -1061,7 +1061,7 @@ describe('melee (knife)', () => {
       refs.set(id, ref);
       combat.registerActor(id, ref);
     }
-    return { combat };
+    return { combat, bus };
   }
 
   /** One fresh trigger press, exactly as `Player.handleFire` presents it. */
@@ -1076,6 +1076,25 @@ describe('melee (knife)', () => {
       now,
     );
   }
+
+  it('tags the shot event as melee so a swing never plays a gunshot', () => {
+    const { combat, bus } = makeMelee();
+    const meleeFlags: boolean[] = [];
+    bus.on('shot', (e) => meleeFlags.push(e.melee));
+
+    swing(combat, 0.1);
+
+    const gun = combat.getWeaponState(2, AK47.id, AK47);
+    gun.triggerDown = true;
+    gun.triggerPressed = false;
+    combat.tryFire(2, AK47, { dir: { x: 0, y: 0, z: -1 }, targets: [], rng: new Rng(2) }, 0.2);
+
+    // The knife is a real swing — the swing clock, the RPM gate and the noise the
+    // bots hear all ride the same `shot` event — but the presentation layers must
+    // not draw a muzzle flash / tracer / casing or play a gunshot for it. They key
+    // off this flag, so it has to be `true` for the knife and `false` for a rifle.
+    expect(meleeFlags).toEqual([true, false]);
+  });
 
   it('keeps swinging and never runs out of ammo', () => {
     const { combat } = makeMelee();

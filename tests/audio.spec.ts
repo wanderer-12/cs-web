@@ -39,6 +39,7 @@ import {
   renderFootstep,
   renderGunshot,
   renderImpact,
+  renderKnifeWhoosh,
   renderReload,
   renderUIClick,
 } from '../src/audio/synth';
@@ -299,6 +300,24 @@ describe('generators render into a structural context', () => {
     const peak = peakOf(buffer);
     expect(peak).toBeGreaterThan(0.02);
     expect(peak).toBeLessThanOrEqual(1);
+  });
+
+  it('renders an audible knife whoosh that is air, not a gunshot', () => {
+    const ctx = new FakeContext(SAMPLE_RATE);
+    const whoosh = renderKnifeWhoosh(ctx, new Rng(77));
+    const samples = whoosh.getChannelData(0).length;
+    // Long enough to read as a swing (0.26 s), short enough not to smear.
+    expect(samples).toBe(Math.ceil(0.26 * SAMPLE_RATE));
+    expect(finiteSamples(whoosh)).toBe(samples);
+    const peak = peakOf(whoosh);
+    expect(peak).toBeGreaterThan(0.02);
+    // `tamePeak(data, 0.7)` keeps a swing well under a rifle's peak: a knife must
+    // never be as loud as a gunshot.
+    expect(peak).toBeLessThanOrEqual(0.8);
+
+    // Deterministic per seed, like every other generator.
+    const again = renderKnifeWhoosh(new FakeContext(SAMPLE_RATE), new Rng(77));
+    expect(peakOf(again)).toBeCloseTo(peak, 9);
   });
 
   it('renders a footstep for every material with a sane length', () => {
