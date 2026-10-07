@@ -83,17 +83,11 @@ function readLaunchOptions(search: string): LaunchOptions {
   const mode: MatchModeId | undefined =
     modeRaw === 'duel' ? 'duel' : modeRaw === 'classic' || modeRaw === 'rules' ? 'classic' : undefined;
 
-  // Any gameplay parameter means "just start": the picker is for players who
-  // arrived at the plain URL, and skipping it keeps every documented query
-  // string (?bot=hard, ?stats=1, …) behaving exactly as before.
-  const skipMenu =
-    params.get('menu') === '0' ||
-    mode !== undefined ||
-    params.has('bot') ||
-    params.has('difficulty') ||
-    params.has('team') ||
-    params.has('seed') ||
-    params.has('name');
+  // The plain URL boots straight into a match (the default is the duel-mode 1v3
+  // bot game, which is what double-clicking the launcher should give you).
+  // `?menu=1` forces the picker back for classic 5v5, hosting a LAN duel or the
+  // difficulty dial; `?menu=0` is kept as the explicit spelling of "no picker".
+  const skipMenu = params.get('menu') !== '1';
 
   return {
     humanName: params.get('name')?.trim() || MATCH.playerName,
@@ -241,13 +235,14 @@ function main(): void {
     menu.show();
   };
 
-  if (options.skipMenu) launch({ kind: 'solo', mode: options.mode ?? 'classic' });
   // `?join=1` is the link the host hands out: opening it goes straight into the
-  // duel as the guest; `?join=192.168.1.23` names the host explicitly.
-  else if (options.join !== undefined) {
+  // duel as the guest; `?join=192.168.1.23` names the host explicitly. It is
+  // checked first because the plain URL now starts a match on its own.
+  if (options.join !== undefined) {
     const address = /^(1|auto|yes|self)$/i.test(options.join) ? '' : options.join;
     launch({ kind: 'join', address });
-  } else showMenu();
+  } else if (options.skipMenu) launch({ kind: 'solo', mode: options.mode ?? 'duel' });
+  else showMenu();
 
   // F3 prints a stats line on demand.
   window.addEventListener('keydown', (event) => {

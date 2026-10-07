@@ -880,6 +880,22 @@ export function renderWhizz(ctx: RenderContext, rng: Rng): BufferLike {
   return buffer;
 }
 
+/**
+ * A knife cutting air: a narrow band of noise sweeps upward (the swish of the
+ * edge) over a wider, lower band (the air being pushed) and a soft click where
+ * the swing starts. Deliberately short and quiet — steel moving nearby is
+ * information for the player's ear, not a gunshot report.
+ */
+export function renderKnifeWhoosh(ctx: RenderContext, rng: Rng): BufferLike {
+  const { buffer, data } = makeBuffer(ctx, 0.26);
+  const sr = ctx.sampleRate;
+  svBand(data, sr, 0, 0.2, rng.range(600, 780), 1.4, 0.5, rng, rng.range(2300, 2900));
+  bandNoise(data, sr, 0, 0.24, 1000 * rng.range(0.92, 1.1), 900, 0.14, 0.3, rng, 0.7);
+  sineTone(data, sr, 0, 0.05, 190 * rng.range(0.9, 1.15), 0.03, 0.06, 0, 0.002);
+  tamePeak(data, 0.7);
+  return buffer;
+}
+
 /** HE grenade: a deep initial blast plus a long debris tail. */
 export function renderExplosion(ctx: RenderContext, rng: Rng): BufferLike {
   const duration = 2.4;

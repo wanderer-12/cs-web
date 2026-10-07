@@ -200,6 +200,12 @@ export class InputSystem {
     };
 
     const onMouseDown = (e: MouseEvent) => {
+      // Every button's browser default is unwanted on the play surface: the right
+      // button is the aim button (so no context menu, and no right-drag gesture),
+      // the middle button would start autoscroll. Preventing the default here —
+      // not only while locked — is what keeps a stray right-drag on the page from
+      // turning into a browser gesture.
+      e.preventDefault();
       if (!this.locked) return;
       this.held.add(`Mouse${e.button}`);
       const consumed = this.onMouseButton?.(e.button, true);
@@ -211,7 +217,19 @@ export class InputSystem {
       this.onMouseButton?.(e.button, false);
     };
 
-    const onContextMenu = (e: Event) => e.preventDefault();
+    const onContextMenu = (e: Event) => {
+      // Same rule, anywhere on the page: the game owns the right button. Text
+      // fields keep the native menu so a player name can still be pasted.
+      if (isTextTarget(e.target)) return;
+      e.preventDefault();
+    };
+
+    /** A drag or selection starting outside a text field is never wanted. */
+    const onDragLike = (e: Event) => {
+      if (isTextTarget(e.target)) return;
+      e.preventDefault();
+    };
+
     const onBlur = () => {
       this.held.clear();
       this.clearButtons();
@@ -223,7 +241,9 @@ export class InputSystem {
     window.addEventListener('keyup', onKeyUp);
     canvas.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mouseup', onMouseUp);
-    canvas.addEventListener('contextmenu', onContextMenu);
+    window.addEventListener('contextmenu', onContextMenu);
+    window.addEventListener('selectstart', onDragLike);
+    window.addEventListener('dragstart', onDragLike);
     window.addEventListener('blur', onBlur);
 
     this.listeners = [
@@ -233,7 +253,9 @@ export class InputSystem {
       () => window.removeEventListener('keyup', onKeyUp),
       () => canvas.removeEventListener('mousedown', onMouseDown),
       () => window.removeEventListener('mouseup', onMouseUp),
-      () => canvas.removeEventListener('contextmenu', onContextMenu),
+      () => window.removeEventListener('contextmenu', onContextMenu),
+      () => window.removeEventListener('selectstart', onDragLike),
+      () => window.removeEventListener('dragstart', onDragLike),
       () => window.removeEventListener('blur', onBlur),
     ];
   }

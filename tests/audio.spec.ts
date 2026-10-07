@@ -588,6 +588,7 @@ describe('AudioEngine.attach / detach', () => {
         origin: { x: 0, y: 0, z: 0 },
         dir: { x: 1, y: 0, z: 0 },
         silenced: false,
+        melee: false,
         ammo: 30,
       }),
     ).not.toThrow();
@@ -599,6 +600,7 @@ describe('AudioEngine.attach / detach', () => {
       origin: { x: 0, y: 0, z: 0 },
       dir: { x: 1, y: 0, z: 0 },
       silenced: false,
+      melee: false,
       ammo: 29,
     });
     expect(seen).toBe(2);

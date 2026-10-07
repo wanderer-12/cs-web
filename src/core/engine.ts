@@ -653,6 +653,7 @@ export class Engine {
     this.hud.setActors(blips);
     this.hud.setSpotted(this.spottedIds(local));
     this.hud.setState(this.frameState(view, frameDt));
+    this.syncScope(view);
 
     this.scoreTimer += frameDt;
     if (this.hud.getScoreboardOpen() && this.scoreTimer >= SCORE_REFRESH_INTERVAL) {
@@ -829,6 +830,23 @@ export class Engine {
       dead,
       fps: frameDt > 0 ? 1 / frameDt : this.loop.fps,
     };
+  }
+
+  /**
+   * Publish the scope for the frame. The scope itself lives in the weapon state
+   * (the player writes it there); the engine only forwards it, because three
+   * things read from that single value: the scope overlay, the hidden crosshair
+   * and the slower scoped look.
+   */
+  private syncScope(view: Player): void {
+    const local = this.match.local;
+    const scoped = view === local && local.state.alive && !!local.ammo.get(local.weapon.id)?.scoped;
+    this.hud.setScoped(scoped);
+    // Aiming through glass covers less screen per mouse count, so the turn rate
+    // follows the zoomed FOV: the same "feel" ratio CS players get from
+    // `zoom_sensitivity_ratio`.
+    const scale = scoped ? Math.max(0.15, this.rig.viewFov / CAMERA.fov) : 1;
+    if (this.input.zoomSensitivityScale !== scale) this.input.zoomSensitivityScale = scale;
   }
 
   private buildBlips(view: Player): RadarBlip[] {

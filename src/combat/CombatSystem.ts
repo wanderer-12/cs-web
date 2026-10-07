@@ -434,6 +434,10 @@ export class CombatSystem {
       dir: shotDirScratch,
       silenced: def.silenced === true,
       ammo: st ? st.ammo : 0,
+      // A knife swing keeps its event (the swing clock, the RPM gate and the
+      // "somebody swung near me" noise all read it), but it must not sound or
+      // look like a gunshot: the presentation layers check this flag.
+      melee: def.kind === 'knife',
     });
 
     // --- impacts on geometry ----------------------------------------------

@@ -109,6 +109,15 @@ export class CameraRig {
   }
 
   /**
+   * Where the field of view is heading. Callers that need the zoomed value
+   * immediately (the scoped sensitivity scale, the scope overlay) must not read
+   * the smoothed `fov`, which still shows the previous level for a few frames.
+   */
+  get viewFov(): number {
+    return this.fovTarget;
+  }
+
+  /**
    * Compose the camera for rendering.
    * @param aimYaw   true aim (player yaw)
    * @param aimPitch true aim (player pitch)

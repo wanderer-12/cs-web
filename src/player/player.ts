@@ -108,7 +108,10 @@ export class Player {
 
   /** Seconds of scope transition remaining (0 = fully scoped in/out). */
   scopeTimer = 0;
+  /** 0 = bare eye, 1..n = the matching entry of `WeaponDef.zoomFov`. */
   zoomLevel = 0;
+  /** Last frame's right-click state, so a zoom step needs a fresh press. */
+  private scopePressed = false;
 
   /** Whether this actor's life is already accounted for (death event fired). */
   private deathReported = false;
@@ -507,25 +510,63 @@ export class Player {
     return mul;
   }
 
+  /**
+   * Scope handling. A sniping weapon may define several zoom levels
+   * (`zoomFov: [40, 15]`), and every fresh right-click press steps to the next
+   * one and wraps back to the bare eye — the CS AWP rhythm (tap, tap, hip).
+   * Holding the button does NOT re-step, and letting go does not unzoom: the
+   * old hold-to-zoom made the scope a mouse-button-treadmill.
+   */
   private updateScope(cmd: InputCommand, dt: number): void {
     const def = this.weapon;
-    const canZoom = !!def.zoomFov && def.zoomFov.length > 0;
-    if (!canZoom) {
+    const levels = def.zoomFov && def.zoomFov.length > 0 ? def.zoomFov : null;
+    if (!levels) {
       if (this.zoomLevel !== 0) {
         this.zoomLevel = 0;
         this.scopeTimer = 0;
         this.rig.setFov(CAMERA.fov);
       }
+      this.scopePressed = false;
+      this.publishScoped(false);
       return;
     }
-    const wantZoom = cmd.buttons.attack2;
-    const wasZoomed = this.zoomLevel > 0;
-    if (wantZoom !== wasZoomed) {
-      this.zoomLevel = wantZoom ? 1 : 0;
+    const pressed = cmd.buttons.attack2;
+    if (pressed && !this.scopePressed) {
+      this.zoomLevel = this.zoomLevel >= levels.length ? 0 : this.zoomLevel + 1;
       this.scopeTimer = def.zoomTime ?? 0.3;
-      this.rig.setFov(wantZoom ? (def.zoomFov![0] ?? CAMERA.fov) : CAMERA.fov);
+      const fov = this.zoomLevel > 0 ? (levels[this.zoomLevel - 1] ?? CAMERA.fov) : CAMERA.fov;
+      this.rig.setFov(fov);
     }
+    this.scopePressed = pressed;
     if (this.scopeTimer > 0) this.scopeTimer = Math.max(0, this.scopeTimer - dt);
+    // The scope only counts as settled once the transition finished; a mid-swipe
+    // view would show the scope hole jumping around.
+    this.publishScoped(this.zoomLevel > 0 && this.scopeTimer <= 0);
+  }
+
+  /**
+   * Drop out of the scope right now (used after a scoped shot and on death).
+   * The render layers read the scope from the weapon state, so this must go
+   * through `publishScoped`.
+   */
+  private unscope(): void {
+    if (this.zoomLevel === 0 && this.scopeTimer === 0) return;
+    this.zoomLevel = 0;
+    this.scopeTimer = 0;
+    this.rig.setFov(CAMERA.fov);
+    this.publishScoped(false);
+  }
+
+  /**
+   * Mirror the scope into the weapon runtime state: `ViewModel` hides the
+   * weapon, the HUD draws the scope overlay and the engine drops the crosshair
+   * entirely from this one flag.
+   */
+  private publishScoped(scoped: boolean): void {
+    const def = this.weapon;
+    const st = this.combat.getWeaponState(this.id, def.id, def);
+    st.scoped = scoped;
+    st.zoomLevel = this.zoomLevel;
   }
 
   private handleReload(cmd: InputCommand): void {
@@ -568,6 +609,9 @@ export class Player {
     // Melee has no muzzle flash and a flat recoil pattern, so the swing itself is
     // the feedback: the rig sweeps the view model and rolls the camera for ~0.3 s.
     if (def.kind === 'knife') this.rig.startSwing();
+    // A scoped sniper shot drops back to the bare eye: that is the bolt-action
+    // rhythm, and it keeps the scope hole from swallowing the recoil kick.
+    if (def.kind === 'sniper' && this.zoomLevel > 0) this.unscope();
 
     // View punch: the pattern entry for THIS shot is the offset of the view from
     // the true aim. It is deliberately NOT folded into `state.pitch`, so pulling

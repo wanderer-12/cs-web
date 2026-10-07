@@ -46,6 +46,7 @@ import {
   renderHitMarker,
   renderImpact,
   renderJump,
+  renderKnifeWhoosh,
   renderLand,
   renderReload,
   renderRoundEnd,
@@ -567,6 +568,13 @@ export class AudioEngine {
   // -------------------------------------------------------------------------
 
   private onShot(e: GameEventMap['shot']): void {
+    // A knife swing is not a gunshot: it gets its own air-cutting whoosh, which
+    // is what tells the player (and the bots' ears) that steel moved nearby.
+    if (e.melee === true) {
+      const whoosh = this.variant('cue:knifewhoosh', (ac, rng) => renderKnifeWhoosh(ac, rng));
+      if (whoosh) this.play3D(whoosh, e.origin, { volume: 0.7, bus: 'sfx' });
+      return;
+    }
     const def = this.weaponLookup(e.weaponId);
     // `origin` is the muzzle position, which is what we want to spatialise.
     if (!def) return;

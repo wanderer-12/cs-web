@@ -176,6 +176,9 @@ export class Hud {
   private dmgLayer!: HTMLDivElement;
   private flashEl!: HTMLDivElement;
   private dmgFlashEl!: HTMLDivElement;
+  /** Sniper scope overlay (mask + reticle); shown by `setScoped`. */
+  private scopeEl!: HTMLDivElement;
+  private scoped = false;
   private deadEl!: HTMLDivElement;
   private healthEl!: HTMLDivElement;
   private armorEl!: HTMLDivElement;
@@ -229,6 +232,7 @@ export class Hud {
     this.buildFeed();
     this.buildCrosshair();
     this.buildDamageLayer();
+    this.buildScope();
     this.buildMenu();
     this.buildBands();
     this.buildDebug();
@@ -341,6 +345,27 @@ export class Hud {
     this.dmgLayer = this.el('div', 'hud-dmg-layer', this.root);
     this.flashEl = this.el('div', 'hud-flash', this.root);
     this.dmgFlashEl = this.el('div', 'hud-dmgflash', this.root);
+  }
+
+  /**
+   * The sniper scope. Everything is CSS (an opaque mask with a circular hole,
+   * two reticle lines, a ring with four edge ticks and a centre dot), so there
+   * is no texture to load and nothing to update per frame: `setScoped` only
+   * toggles the layer and the `hud-scoped` root class that swaps the crosshair
+   * out. `z-index:40` keeps the mask over the peripheral panels while the
+   * `.overlay` menus (z-index 150) stay on top of it.
+   */
+  private buildScope(): void {
+    this.scopeEl = this.el('div', 'hud-scope hud-hidden', this.root);
+    this.el('div', 'hud-scope-mask', this.scopeEl);
+    this.el('div', 'hud-scope-h', this.scopeEl);
+    this.el('div', 'hud-scope-v', this.scopeEl);
+    const ring = this.el('div', 'hud-scope-ring', this.scopeEl);
+    this.el('div', 'hud-scope-tick hud-scope-tick-l', ring);
+    this.el('div', 'hud-scope-tick hud-scope-tick-r', ring);
+    this.el('div', 'hud-scope-tick hud-scope-tick-t', ring);
+    this.el('div', 'hud-scope-tick hud-scope-tick-b', ring);
+    this.el('div', 'hud-scope-dot', this.scopeEl);
   }
 
   private buildMenu(): void {
@@ -644,6 +669,22 @@ export class Hud {
   }
 
   /**
+   * Show (or hide) the sniper scope. The engine pushes this every frame from the
+   * weapon state, so it must be cheap: one class flip on the layer and one on
+   * the root, and only when the value actually changed.
+   */
+  setScoped(visible: boolean): void {
+    if (this.disposed || this.scoped === visible) return;
+    this.scoped = visible;
+    this.scopeEl.classList.toggle('hud-hidden', !visible);
+    this.root.classList.toggle('hud-scoped', visible);
+  }
+
+  getScoped(): boolean {
+    return this.scoped;
+  }
+
+  /**
    * Connection line for a LAN duel; `null` hides it, which is what every
    * single-player match wants. The tone is read off the phase rather than passed
    * in, so the engine hands over exactly one thing.
@@ -746,6 +787,15 @@ export class Hud {
       if (this.buy.handleKeyDown(e)) {
         e.preventDefault();
         e.stopPropagation();
+        return;
+      }
+      // The menu did not consume the key. B closes what B opened (it used to be
+      // swallowed here, so the only way out was Escape), and Escape already
+      // returns `true` from the menu above. Everything else stays eaten: the
+      // player must not drive the match through an open menu.
+      if (e.key === 'b' || e.key === 'B') {
+        this.setBuyMenuOpen(false);
+        e.preventDefault();
       }
       return;
     }

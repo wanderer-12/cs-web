@@ -91,10 +91,23 @@ const WEAPON_SETTLE_TIME = 1.5;
  */
 const SEPARATION_DISTANCE = PLAYER.radius * 2;
 /**
+ * Bot-versus-bot spacing is deliberately wider than touching: a squad that walks
+ * at 0.6 m apart reads as one lump of bodies and blocks its own fire lanes, so
+ * two bots hold about 1.8 m. Humans keep the touching distance, and a push that
+ * would end inside a wall is still dropped whole (`tryPush`).
+ */
+const SEPARATION_DISTANCE_BOT = PLAYER.radius * 6;
+/**
  * Most one body can be pushed in a single tick, so a separation never reads as a
  * teleport. A full overlap therefore resolves over a few ticks.
  */
 const SEPARATION_MAX_PUSH = PLAYER.radius * 0.5;
+/**
+ * How far off the enemy a bot aims its approach in the duel "hunt" objective.
+ * One shared goal node sent all three bots down the same line into the same
+ * spot; each bot now walks its own point on this ring around the enemy.
+ */
+const HUNT_APPROACH_RADIUS = 320;
 
 /** Buy-eligible equipment ids, in the order the buy menu lists them. */
 export const EQUIPMENT_IDS = ['kevlar', 'kevlarhelmet', 'defusekit'] as const;
@@ -320,6 +333,8 @@ export class Match {
   /** Scratch for the body-vs-body separation pass; see `separatePlayers`. */
   private readonly pushProbe = v3();
   private readonly pushExtents = { ex: 0, ey: 0, ez: 0 };
+  /** Scratch point for a bot's own approach target; see `huntRingNode`. */
+  private readonly huntProbe = v3();
   /** Last phase index the players were told about, so a stage change is said once. */
   private roundPhaseAnnounced = -1;
 
@@ -714,10 +729,16 @@ export class Match {
         // Bodies on different floors (a crate, a stair) never push each other.
         if (Math.abs(a.state.pos.y - b.state.pos.y) > PLAYER.standHeight) continue;
 
+        const aIsHuman = a === this.local;
+        const bIsHuman = b === this.local;
+        if (aIsHuman && bIsHuman) continue;
+        // Bots hold a visibly wider gap from each other than two touching bodies.
+        const wanted = a.state.isBot && b.state.isBot ? SEPARATION_DISTANCE_BOT : SEPARATION_DISTANCE;
+
         let dx = b.state.pos.x - a.state.pos.x;
         let dz = b.state.pos.z - a.state.pos.z;
         let dist = Math.sqrt(dx * dx + dz * dz);
-        if (dist >= SEPARATION_DISTANCE) continue;
+        if (dist >= wanted) continue;
         if (dist < 1e-4) {
           // Exactly co-located: split along a stable, id-derived axis instead of
           // dividing by zero, so the pair separates deterministically.
@@ -728,11 +749,8 @@ export class Match {
         }
         const nx = dx / dist;
         const nz = dz / dist;
-        const push = Math.min(SEPARATION_DISTANCE - dist, SEPARATION_MAX_PUSH);
+        const push = Math.min(wanted - dist, SEPARATION_MAX_PUSH);
 
-        const aIsHuman = a === this.local;
-        const bIsHuman = b === this.local;
-        if (aIsHuman && bIsHuman) continue;
         const aShare = aIsHuman ? 0 : bIsHuman ? 1 : 0.5;
         const bShare = bIsHuman ? 0 : aIsHuman ? 1 : 0.5;
         if (aShare > 0) this.tryPush(a, -nx * push * aShare, -nz * push * aShare);
@@ -776,6 +794,10 @@ export class Match {
     const state = this.combat.getWeaponState(player.id, def.id, def);
     const lastHit = this.lastHitAt.get(player.id) ?? -Infinity;
     this.updateTeamObjective(player.team);
+    // In a duel every bot would otherwise share the enemy's single nav node and
+    // walk the same line into the same square metre. Give each bot its own point
+    // on a ring around the enemy so a squad closes in from different angles.
+    if (this.objective.kind === 'hunt') this.objective.goalNode = this.huntRingNode(player);
     return controller.update({
       self: player.state,
       actors: this.actorStates(),
@@ -884,6 +906,25 @@ export class Match {
       this.objective.site = this.targetSite;
       this.objective.goalNode = this.siteGoalNode(this.targetSite);
     }
+  }
+
+  /**
+   * The nav node this bot should walk to while hunting, one ring slot per squad
+   * member: slot 0 takes the far side, slot 1 the right flank, and so on. The
+   * ring point is snapped to the navmesh, so a slot that lands in a crate or a
+   * wall still resolves to a reachable node instead of a dead end.
+   */
+  private huntRingNode(player: Player): number {
+    const enemy = this.players.find((p) => p.team !== player.team && p.state.alive);
+    if (!enemy) return -1;
+    const mates = this.players.filter((p) => p.team === player.team && p.state.alive);
+    const slot = Math.max(0, mates.indexOf(player));
+    const angle = (slot / Math.max(1, mates.length)) * Math.PI * 2;
+    const probe = this.huntProbe;
+    probe.x = enemy.state.pos.x + Math.sin(angle) * HUNT_APPROACH_RADIUS;
+    probe.y = enemy.state.pos.y;
+    probe.z = enemy.state.pos.z + Math.cos(angle) * HUNT_APPROACH_RADIUS;
+    return this.nav.nearestNode(probe);
   }
 
   private siteGoalNode(site: 'A' | 'B'): number {

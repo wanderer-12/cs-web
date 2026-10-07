@@ -111,11 +111,15 @@ b.stairsX(160, 384, 736, 928, RAMP_STEPS, RAMP_RISE, 'concrete', TINT.plate);
 
 /** Spawn points sit 8 u up, on top of their spawn pad. */
 function duelSpawns(): SpawnPoint[] {
+  // A wide fan, not a line: the four slots spread across most of the pad and
+  // alternate depth, so nobody starts inside anyone else and a team walks out
+  // along four different lanes. Every point stays well inside the pad
+  // (x ±640, z 1088..1344) and inside the own buy zone (x ±672, z 1056..1376).
   const south: [number, number][] = [
-    [-288, 1184],
-    [0, 1248],
-    [288, 1184],
-    [576, 1248],
+    [-576, 1184],
+    [-192, 1264],
+    [192, 1184],
+    [576, 1264],
   ];
   const out: SpawnPoint[] = [];
   south.forEach(([x, z], i) => {

@@ -498,6 +498,10 @@ export class VfxSystem {
 
   private onShot = (e: GameEventMap['shot']): void => {
     if (!e || !isFiniteVec(e.origin) || !isFiniteVec(e.dir)) return;
+    // A knife swing fires nothing: no muzzle flash, no smoke, no tracer and no
+    // muzzle light. (The casing branch below already excluded the knife; this
+    // early exit is what keeps the rest of the gunfire look off it.)
+    if (e.melee === true) return;
     const cam = this.camBasis;
     const dir = safeDir(tmpDir, e.dir);
     const silenced = e.silenced === true;
@@ -542,9 +546,9 @@ export class VfxSystem {
       this.tracerRollSign * TRACER_ROLL,
     );
 
-    // --- shell casing (not for melee or a planted charge) ---
+    // --- shell casing (a planted charge ejects nothing; melee returned above) ---
     const weaponId = typeof e.weaponId === 'string' ? e.weaponId : '';
-    if (weaponId !== 'knife' && weaponId !== 'c4') {
+    if (weaponId !== 'c4') {
       tmpPoint.x = e.origin.x + cam.rx * 8 - cam.ux * 6 + dir.x * 4;
       tmpPoint.y = e.origin.y + cam.ry * 8 - cam.uy * 6 + dir.y * 4;
       tmpPoint.z = e.origin.z + cam.rz * 8 - cam.uz * 6 + dir.z * 4;

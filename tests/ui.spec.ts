@@ -722,8 +722,19 @@ describe('styles', () => {
       'hud-result',
       'hud-matchend',
       'hud-menu',
+      'hud-scope',
+      'hud-scope-mask',
+      'hud-scope-ring',
+      'hud-scope-h',
+      'hud-scope-v',
+      'hud-scope-dot',
+      'hud-scope-tick',
+      'hud-scoped',
     ];
     for (const cls of required) expect(CSS).toContain(`.${cls}`);
+
+    // Scoping replaces the crosshair with the scope reticle wholesale.
+    expect(CSS).toMatch(/\.hud-root\.hud-scoped\s+\.hud-xh\s*\{[^}]*display:\s*none/s);
   });
 
   it('keeps the main bands resolution independent', () => {

@@ -199,6 +199,42 @@ export const CSS = `
 }
 .hud-root.hud-dead .hud-xh, .hud-root.hud-dead .hud-hitmarker{ display:none; }
 
+/* ===================== sniper scope ===================== */
+/* Scoping swaps the crosshair for the scope reticle wholesale. */
+.hud-root.hud-scoped .hud-xh{ display:none; }
+.hud-scope{
+  position:absolute; inset:0; pointer-events:none; z-index:40;
+}
+/* Opaque outside, clear inside: closest-side keeps the hole perfectly round
+   on any aspect ratio (a plain circle measures to the farthest corner). */
+.hud-scope-mask{
+  position:absolute; inset:0;
+  background:radial-gradient(circle closest-side at 50% 50%,
+    rgba(0,0,0,0) 0 61.5%, rgba(0,0,0,.985) 62.4% 100%);
+}
+/* The ring darkens the rim of the hole the way real optics vignette. */
+.hud-scope-ring{
+  position:absolute; left:50%; top:50%;
+  width:min(62vw,62vh); height:min(62vw,62vh);
+  margin:calc(min(62vw,62vh) / -2) 0 0 calc(min(62vw,62vh) / -2);
+  border-radius:50%;
+  box-shadow:inset 0 0 7vmin rgba(0,0,0,.72), inset 0 0 0 1px rgba(255,255,255,.06), 0 0 0 1px rgba(0,0,0,.95);
+}
+.hud-scope-h, .hud-scope-v{ position:absolute; background:rgba(0,0,0,.78); }
+.hud-scope-h{ left:0; right:0; top:50%; height:1px; margin-top:-.5px; }
+.hud-scope-v{ top:0; bottom:0; left:50%; width:1px; margin-left:-.5px; }
+.hud-scope-tick{ position:absolute; background:rgba(0,0,0,.85); }
+.hud-scope-tick-l, .hud-scope-tick-r{ top:50%; width:9%; height:2px; margin-top:-1px; }
+.hud-scope-tick-l{ left:0; }
+.hud-scope-tick-r{ right:0; }
+.hud-scope-tick-t, .hud-scope-tick-b{ left:50%; width:2px; height:9%; margin-left:-1px; }
+.hud-scope-tick-t{ top:0; }
+.hud-scope-tick-b{ bottom:0; }
+.hud-scope-dot{
+  position:absolute; left:50%; top:50%; width:2px; height:2px; margin:-1px 0 0 -1px;
+  background:rgba(0,0,0,.9); border-radius:50%;
+}
+
 /* ===================== hit marker ===================== */
 .hud-hitmarker{
   position:absolute; left:50%; top:50%; width:0; height:0;
@@ -303,6 +339,8 @@ export const CSS = `
 .overlay{
   position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
   background:rgba(3,5,8,.62); pointer-events:auto;
+  /* Above the scope layer (z-index 40): a menu opened while scoped must read. */
+  z-index:150;
 }
 .overlay .frame{
   max-width:92vw; max-height:92vh; overflow:auto; padding:1.1em 1.4em;

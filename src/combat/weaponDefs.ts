@@ -192,7 +192,9 @@ export const AWP = def({
   reloadTime: 3.7, drawTime: 1.2, moveSpeed: 200,
   baseInaccuracy: 0.02, moveInaccuracy: 140, airInaccuracy: 300, crouchInaccuracy: 0.02,
   falloffStart: 6000, falloffEnd: 9000, falloff: 0.95, effectiveRange: 8000,
-  zoomFov: [40], zoomTime: 0.35,
+  // Two levels, like the real thing: the first is the wide "find them" scope,
+// the second is the "put it through the head" scope.
+  zoomFov: [40, 15], zoomTime: 0.35,
   sound: { gain: 1.35, body: 0.7, duration: 0.34, thump: 0.75 },
 });
 
@@ -202,7 +204,7 @@ export const SSG08 = def({
   reloadTime: 3.7, drawTime: 1.0, moveSpeed: 230,
   baseInaccuracy: 0.02, moveInaccuracy: 120, airInaccuracy: 280, crouchInaccuracy: 0.02,
   falloffStart: 5000, falloffEnd: 9000, falloff: 0.9, effectiveRange: 7000,
-  zoomFov: [50], zoomTime: 0.3,
+  zoomFov: [50, 20], zoomTime: 0.3,
   sound: { gain: 1.15, body: 0.62, duration: 0.3, thump: 0.6 },
 });
 

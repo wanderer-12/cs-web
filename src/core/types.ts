@@ -359,7 +359,21 @@ export interface RoundState {
 
 /** Events emitted by the simulation; consumed by UI/audio/VFX. */
 export interface GameEventMap {
-  shot: { shooterId: number; weaponId: string; origin: Vec3; dir: Vec3; silenced: boolean; ammo: number };
+  /**
+   * A weapon was swung/fired. `melee` marks a knife swing: it is a real swing
+   * (the swing clock, the RPM gate and the noise for bots all read this event),
+   * but the presentation layers must not draw a muzzle flash, a tracer, a
+   * casing or a gunshot report for it.
+   */
+  shot: {
+    shooterId: number;
+    weaponId: string;
+    origin: Vec3;
+    dir: Vec3;
+    silenced: boolean;
+    ammo: number;
+    melee: boolean;
+  };
   hit: {
     shooterId: number;
     targetId: number;
